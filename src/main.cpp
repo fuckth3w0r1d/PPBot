@@ -1729,8 +1729,8 @@ public:
         dirty_bit.store(false);
         Logger::info("脏位已载入", "");
         running.store(true);
-        std::thread([this]{
-            while(true)
+        timer = std::thread([this]{
+            while(running)
             {
                 autoSaveData();
                 std::this_thread::sleep_for(std::chrono::seconds(SAVE_FREQUENCY));
