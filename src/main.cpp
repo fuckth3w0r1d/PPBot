@@ -10,7 +10,9 @@
 #include <fstream>
 #include <unistd.h>
 #include <shared_mutex>  
-#include <mutex>         
+#include <mutex>    
+#include <chrono>    
+#include <thread> 
 
 #define CPPHTTPLIB_OPENSSL_SUPPORT
 #include "httplib.h"
@@ -976,7 +978,7 @@ private:
     static std::unordered_map<std::string, size_t> group_round_counter;
     static std::shared_mutex group_round_counter_mutex;
     // 保存 session 对话轮数到数据文件
-    bool saveSessionRoundCounter()
+    static bool saveSessionRoundCounter()
     {
         json data;
         std::shared_lock<std::shared_mutex> rlock(session_round_counter_mutex);
@@ -1008,7 +1010,7 @@ private:
     }
 
     // 保存群聊对话轮数到数据文件
-    bool saveGroupRoundCounter()
+    static bool saveGroupRoundCounter()
     {
         json data;
         std::shared_lock<std::shared_mutex> rlock(group_round_counter_mutex);
@@ -1134,7 +1136,7 @@ private:
         return true;
     }
     // 保存 session memory 到数据文件中
-    bool saveSessionMemory()
+    static bool saveSessionMemory()
     {
         json data;
         // 上读锁
@@ -1273,7 +1275,7 @@ private:
         return true;
     }
     // 保存 bot 人格到数据文件中
-    bool saveBotPersona()
+    static bool saveBotPersona()
     {
         json data;
         // 上读锁
@@ -1448,7 +1450,7 @@ private:
         return true;
     }
     // 保存用户画像到数据文件中
-    bool saveUsersProfile()
+    static bool saveUsersProfile()
     {
         json data;
         // 上读锁
@@ -1698,22 +1700,19 @@ private:
         return ai_reply;
     }
 
-    // 计时
-    static std::chrono::steady_clock::time_point last_save_time;
-    static std::mutex save_mutex;
     // 定时自动保存数据
-    bool autoSaveData()
+    static bool autoSaveData()
     {
-        auto now = std::chrono::steady_clock::now();
-        std::lock_guard<std::mutex> lock(save_mutex);
-        if(now - last_save_time >= std::chrono::seconds(SAVE_FREQUENCY))
-        {
-            last_save_time = now;
-            return saveSessionRoundCounter() && saveSessionMemory() &&
+        if(!dirty_bit.load()) return true; // 数据无变化不需要写入文件
+        return saveSessionRoundCounter() && saveSessionMemory() &&
                 saveGroupRoundCounter() && saveBotPersona() && saveUsersProfile();
-        }
-        return true;
     }
+
+    // 数据脏位
+    static std::atomic<bool> dirty_bit;
+    // 计时
+    static std::thread timer;
+    static std::atomic<bool> running;
 
 public:
     ChatTaskManager()
@@ -1727,7 +1726,17 @@ public:
         Logger::info("Bot 人格已加载", "");
         loadUserProfile();
         Logger::info("用户画像已加载", "");
-        last_save_time = std::chrono::steady_clock::now();
+        dirty_bit.store(false);
+        Logger::info("脏位已载入", "");
+        running.store(true);
+        std::thread([this]{
+            while(true)
+            {
+                autoSaveData();
+                std::this_thread::sleep_for(std::chrono::seconds(SAVE_FREQUENCY));
+            }
+        });
+        Logger::info("计时保存线程已启动", "");
     }
     bool canHandle(const MessageContext& msgctx) override
     {
@@ -1749,8 +1758,15 @@ public:
         }else{
             result.emplace_back(MessageManager::buildMsg("text", ChatWithAI(msgctx)));
         }
-        if(!autoSaveData()) Logger::warn("数据保存有异常", "");
+        dirty_bit.store(true, std::memory_order_relaxed);
         return result;
+    }
+
+    ~ChatTaskManager()
+    {
+        // 停止计时线程
+        running.store(false);
+        if(timer.joinable()) timer.join();
     }
 };
 std::unordered_map<std::string, std::vector<ChatTaskManager::SessionMemCtx>> ChatTaskManager::session_memory;
@@ -1773,8 +1789,10 @@ std::shared_mutex ChatTaskManager::session_round_counter_mutex;
 std::unordered_map<std::string, size_t> ChatTaskManager::group_round_counter;
 std::shared_mutex ChatTaskManager::group_round_counter_mutex;
 
-std::chrono::steady_clock::time_point ChatTaskManager::last_save_time;
-std::mutex ChatTaskManager::save_mutex;
+std::atomic<bool> ChatTaskManager::dirty_bit;
+std::atomic<bool> ChatTaskManager::running;
+std::thread ChatTaskManager::timer;
+
 
 //////////////
 // 总的任务管理器
