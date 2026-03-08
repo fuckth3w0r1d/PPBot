@@ -1597,7 +1597,7 @@ private:
         std::lock_guard<std::shared_mutex> group_round_lock(group_round_counter_mutex);
         group_round_counter[msgctx.group_id]++;
         Logger::info("当前群聊轮数: ", group_round_counter[msgctx.group_id]);
-        if(group_round_counter[msgctx.group_id] >= AI_MAX_CHAT_ROUNDS)
+        if(group_round_counter[msgctx.group_id] >= AI_MAX_CHAT_ROUNDS/10)
         {
             if(!UpdateBotPersona(msgctx.group_id))
             {
