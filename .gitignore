@@ -2,7 +2,10 @@
 bot.exe
 config.json
 NapCat.Shell.Windows.OneKey
-cache/*
 start.bat
 data/*
+cache/*
 log/*
+!data/.gitkeep
+!cache/.gitkeep
+!log/.gitkeep
