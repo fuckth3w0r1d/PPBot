@@ -2,7 +2,7 @@
 bot.exe
 config.json
 NapCat.Shell.Windows.OneKey
-cache
+cache/*
 start.bat
-data
-log
+data/*
+log/log.txt
