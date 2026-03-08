@@ -5,4 +5,4 @@ NapCat.Shell.Windows.OneKey
 cache/*
 start.bat
 data/*
-log/log.txt
+log/*
