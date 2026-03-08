@@ -6,6 +6,10 @@
 using json = nlohmann::json;
 
 // 全局配置变量定义
+std::string LOG_FILE_PATH;
+std::size_t LOG_FILE_LEVEL = 1;      
+std::size_t LOG_CONSOLE_LEVEL = 0;  
+
 std::string BOT_QQ;
 
 std::string SERVER_HOST;
@@ -69,6 +73,10 @@ void load_config(const std::string& path)
     }
     json data = json::parse(file);
 
+    // log
+    LOG_FILE_PATH = data["log"]["file"]["path"].get<std::string>();
+    LOG_FILE_LEVEL = data["log"]["file"]["level"].get<std::size_t>();
+    LOG_CONSOLE_LEVEL = data["log"]["console"]["level"].get<std::size_t>();
     // bot
     BOT_QQ = data["bot"]["qq"].get<std::string>();
 

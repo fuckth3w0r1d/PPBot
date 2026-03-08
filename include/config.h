@@ -1,6 +1,11 @@
 #pragma once
 #include <string>
 
+// log
+extern std::string LOG_FILE_PATH;
+extern std::size_t LOG_FILE_LEVEL;
+extern std::size_t LOG_CONSOLE_LEVEL;
+
 // bot
 extern std::string BOT_QQ;
 
