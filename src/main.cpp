@@ -23,56 +23,6 @@
 
 using json = nlohmann::json;
 
-///////////
-// config
-///////////
-Config cfg;
-// naocatqq
-const std::string BOT_QQ = cfg.getBotqq();
-const std::string SERVER_HOST = cfg.getServerHost();
-const int SERVER_PORT = cfg.getServerPort();
-const std::string SERVER_ACCESS_TOKEN = cfg.getServerToken();
-const std::string CLIENT_HOST = cfg.getClientHost();
-const int CLIENT_PORT = cfg.getClientPort();
-const std::string CLIENT_ACCESS_TOKEN = cfg.getClientToken();
-// amap
-const std::string AMAP_KEY = cfg.getAmapKey();
-const std::string AMAP_CLIENT_HOST = cfg.getAmapHost();
-const int AMAP_CLIENT_PORT = cfg.getAmapPort();
-const std::string AMAP_GET_PATH = cfg.getAmapGetPath();
-// ai chat
-const std::string AI_KEY = cfg.getAIKey();
-const std::string AI_CLIENT_HOST = cfg.getAIHost();
-const int AI_CLIENT_PORT = cfg.getAIPort();
-const std::string AI_POST_PATH = cfg.getAIPostPath();
-const std::string AI_MODEL = cfg.getAIModel();
-const std::string AI_DEFAULT_SYS_PROMPTS = cfg.getAISysPrompts();
-const int AI_MAX_TOKENS = cfg.getAIMaxTokens();
-const size_t MAX_CHAT_ROUNDS = cfg.getMaxChatRounds();
-
-const std::string AI_KEY2 = cfg.getAIKey2();
-const std::string AI_CLIENT_HOST2 = cfg.getAIHost2();
-const std::string AI_POST_PATH2 = cfg.getAIPostPath2();
-const std::string AI_MODEL2 = cfg.getAIModel2();
-// bilibili
-const std::string B23_APP_ID = cfg.getB23Appid();
-const std::string B23_CLIENT_HOST = cfg.getB23Host();
-const int B23_CLIENT_PORT = cfg.getB23Port();
-const std::string B23_QUERY_PATH = cfg.getB23GetQueryPath();
-const std::string B23_PLAY_PATH = cfg.getB23GetPlayPath();
-// 本地文件缓存或数据
-const size_t DOWNLOAD_SIZE_LIMIT = cfg.getDownloadSizeLimit();
-const std::string CACHE_PATH = cfg.getCachePath();
-const std::string DATA_PATH = cfg.getDataPath();
-const size_t DOWNLOAD_BUFFER_SIZE = cfg.getDownloadBufferSize();
-const size_t CACHE_FILE_LIMIT = cfg.getCacheFileLimit();
-const size_t SAVE_FREQUENCY = cfg.getSaveFrequency();
-// 随机图片
-const std::string IMG_CLIENT_HOST = cfg.getRandomImgHost();
-const int IMG_CLIENT_PORT = cfg.getRandomImgPort();
-const std::string IMG_GET_PATH = cfg.getRandomImgPath();
-
-
 // 消息结构
 struct ParsedMsgSegments{
     bool at_me = false;
@@ -157,7 +107,7 @@ public:
                 normal_segments.push_back(seg);
         }
         httplib::Headers headers = {
-            {"Authorization", "Bearer " + SERVER_ACCESS_TOKEN}
+            {"Authorization", "Bearer " + SERVER_TOKEN}
         };
         std::string path = (recv.msg_type == "group") ? "/send_group_msg" : "/send_private_msg";
         // 发送普通消息
@@ -508,10 +458,6 @@ public:
         // 返回维护的指令列表
         return MessageManager::buildMsg("text", "指令格式: @我 指令\n当前支持的指令:\n" + cmd_list);
     }
-    ~HelpCommand() override
-    {
-        return;
-    }
 };
 // 时间
 class TimeCommand : public Command{
@@ -538,10 +484,6 @@ public:
     json execute(const std::string& args) override
     {
         return MessageManager::buildMsg("text", getFormattedTime());
-    }
-    ~TimeCommand() override
-    {
-        return;
     }
 };
 // 天气
@@ -607,7 +549,7 @@ private:
         {
             return "请输入城市名称, 格式: 天气 城市名称";
         }
-        httplib::SSLClient cli(AMAP_CLIENT_HOST, AMAP_CLIENT_PORT);
+        httplib::SSLClient cli(AMAP_HOST, AMAP_PORT);
         auto res = cli.Get(AMAP_GET_PATH + "?city=" + city + "&key=" + AMAP_KEY);
         if(!res)
         {
@@ -645,10 +587,6 @@ public:
     {
         return MessageManager::buildMsg("text", askAmap(args));
     }
-    ~WeatherCommand() override
-    {
-        return;
-    }
 };
 
 // 随机图片
@@ -656,8 +594,8 @@ class RandomImgCommand : public Command{
 private:
     std::string getImgUrl()
     {
-        httplib::SSLClient cli(IMG_CLIENT_HOST, IMG_CLIENT_PORT);
-        auto res = cli.Get(IMG_GET_PATH);
+        httplib::SSLClient cli(RANDOM_IMG_HOST, RANDOM_IMG_PORT);
+        auto res = cli.Get(RANDOM_IMG_GET_PATH);
         if(!res)
         {
             Logger::error("随机图片网络请求失败", httplib::to_string(res.error()));
@@ -684,10 +622,39 @@ public:
     {
         return MessageManager::buildMsg("image", getImgUrl());
     }   
+};
 
-    ~RandomImgCommand() override
+class MealCommand : public Command{
+private:
+    std::string getMealWhat()
     {
-        return;
+        httplib::SSLClient cli(EAT_HOST, EAT_PORT);
+        auto res = cli.Get(EAT_GET_PATH);
+        if(!res)
+        {
+            Logger::error("今天吃啥api网络请求失败", httplib::to_string(res.error()));
+            return "";
+        }
+        if(res->status != 200)
+        {
+            Logger::warn("今天吃啥api请求 HTTP状态码: ", res->status);
+            Logger::error("今天吃啥api请求 异常响应体:", json::parse(res->body).dump(4));
+            return "";
+        }
+        json data = json::parse(res->body);
+        std::string result = data["mealwhat"].get<std::string>();
+        return result;
+    }
+
+public:
+    std::string name() override
+    {
+        return "吃啥";
+    }
+
+    json execute(const std::string& args) override
+    {
+        return MessageManager::buildMsg("text", getMealWhat());
     }
 };
 
@@ -737,6 +704,7 @@ public:
         registerCommand(std::make_unique<TimeCommand>());
         registerCommand(std::make_unique<WeatherCommand>());
         registerCommand(std::make_unique<RandomImgCommand>());
+        registerCommand(std::make_unique<MealCommand>());
         // 后续文本指令也在此注册
         registerCommand(std::make_unique<HelpCommand>(getCommandList()));
     }
@@ -863,8 +831,8 @@ private:
     // 获取B站视频直链url和视频大小
     void getBVUrlandSize(const std::string& bvid, const std::string& cid, BVinfo& bvinfo)
     {
-        httplib::SSLClient cli(B23_CLIENT_HOST, B23_CLIENT_PORT);
-        auto res = cli.Get(B23_PLAY_PATH + "?bvid=" + bvid + "&cid=" + cid);
+        httplib::SSLClient cli(B23_HOST, B23_PORT);
+        auto res = cli.Get(B23_GET_PLAY_PATH + "?bvid=" + bvid + "&cid=" + cid);
         if (!res)
         {
             Logger::error("B站播放请求失败", httplib::to_string(res.error()));
@@ -893,8 +861,8 @@ private:
     {
         std::string bvid = getBVid(data);
         Logger::info("Bvid: ", bvid);
-        httplib::SSLClient cli(B23_CLIENT_HOST, B23_CLIENT_PORT);
-        auto res = cli.Get(B23_QUERY_PATH + "?bvid=" + bvid);
+        httplib::SSLClient cli(B23_HOST, B23_PORT);
+        auto res = cli.Get(B23_GET_QUERY_PATH + "?bvid=" + bvid);
         if (!res)
         {
             Logger::error("B站查询请求失败", httplib::to_string(res.error()));
@@ -948,7 +916,7 @@ public:
         {
             if(data["meta"].contains("detail_1"))
             {
-                if(data["meta"]["detail_1"]["appid"].get<std::string>() == B23_APP_ID)
+                if(data["meta"]["detail_1"]["appid"].get<std::string>() == B23_APPID)
                 { // 暂时只处理B站分享视频
                     auto [reply_text, video_path] = handleBV(data);
                     json result = json::array();
@@ -1129,7 +1097,7 @@ private:
         session_memory[session_id].emplace_back(mem1);
         session_memory[session_id].emplace_back(mem2);
         // 如果历史过多则清理历史并设置返回标志来更新用户画像
-        if(session_memory[session_id].size() > MAX_CHAT_ROUNDS * 2) // 每轮两条对话
+        if(session_memory[session_id].size() > AI_MAX_CHAT_ROUNDS * 2) // 每轮两条对话
         {
             session_memory[session_id].erase(session_memory[session_id].begin(), session_memory[session_id].begin()+2);
         }
@@ -1223,7 +1191,7 @@ private:
     bool UpdateBotPersona(const std::string& group_id)
     {
         // 让 AI 更新群聊人格记忆
-        httplib::SSLClient cli(AI_CLIENT_HOST, AI_CLIENT_PORT);
+        httplib::SSLClient cli(AI_HOST, AI_PORT);
         json body;
         httplib::Headers headers = {
             {"Authorization", "Bearer " + AI_KEY},
@@ -1347,7 +1315,7 @@ private:
             // 第一次见到该用户, 同时更新昵称和群昵称
             httplib::Client cli(SERVER_HOST, SERVER_PORT);
             httplib::Headers headers = {
-                {"Authorization", "Bearer " + SERVER_ACCESS_TOKEN}
+                {"Authorization", "Bearer " + SERVER_TOKEN}
             };
             json body;
             body["group_id"] = group_id;
@@ -1375,7 +1343,7 @@ private:
     bool UpdateUserProfile(const std::string& session_id, const std::string& user_id, const std::string& group_id)
     {
         // 让 AI 总结用户画像
-        httplib::SSLClient cli(AI_CLIENT_HOST, AI_CLIENT_PORT);
+        httplib::SSLClient cli(AI_HOST, AI_PORT);
         json body;
         httplib::Headers headers = {
             {"Authorization", "Bearer " + AI_KEY},
@@ -1422,7 +1390,7 @@ private:
         // 同时更新昵称和群昵称
         httplib::Client cli2(SERVER_HOST, SERVER_PORT);
         httplib::Headers headers2 = {
-            {"Authorization", "Bearer " + SERVER_ACCESS_TOKEN}
+            {"Authorization", "Bearer " + SERVER_TOKEN}
         };
         json body2;
         body2["group_id"] = group_id;
@@ -1508,7 +1476,7 @@ private:
     {
         const std::string& user_input = msgctx.pmsgsegs.text;
         const std::string session_id = getSessionId(msgctx);
-        httplib::SSLClient cli(AI_CLIENT_HOST, AI_CLIENT_PORT);
+        httplib::SSLClient cli(AI_HOST, AI_PORT);
         json body;
         httplib::Headers headers = {
             {"Authorization", "Bearer " + AI_KEY},
@@ -1527,7 +1495,7 @@ private:
         // 加入系统提示词
         messages.push_back({
             {"role", "system"},
-            {"content", "<1>" + AI_DEFAULT_SYS_PROMPTS}
+            {"content", "<1>" + AI_SYS_PROMPTS}
         });
         // 加入bot人格
         messages.push_back({
@@ -1614,7 +1582,7 @@ private:
             session_round_counter[session_id]++;
             // 同步轮数
             Logger::info("更新对应 session 对话历史成功, 轮数: ", session_round_counter[session_id]);
-            if(session_round_counter[session_id] >= MAX_CHAT_ROUNDS/10)
+            if(session_round_counter[session_id] >= AI_MAX_CHAT_ROUNDS/10)
             {
                 if(!UpdateUserProfile(session_id, msgctx.user_id, msgctx.group_id))
                 {
@@ -1629,7 +1597,7 @@ private:
         std::lock_guard<std::shared_mutex> group_round_lock(group_round_counter_mutex);
         group_round_counter[msgctx.group_id]++;
         Logger::info("当前群聊轮数: ", group_round_counter[msgctx.group_id]);
-        if(group_round_counter[msgctx.group_id] >= MAX_CHAT_ROUNDS)
+        if(group_round_counter[msgctx.group_id] >= AI_MAX_CHAT_ROUNDS)
         {
             if(!UpdateBotPersona(msgctx.group_id))
             {
@@ -1644,7 +1612,7 @@ private:
     // 单纯的与纯净模型交互 (豆包)
     std::string askAI(const MessageContext& msgctx)
     {
-        httplib::SSLClient cli(AI_CLIENT_HOST2, AI_CLIENT_PORT);
+        httplib::SSLClient cli(AI_HOST2, AI_PORT);
         cli.enable_server_certificate_verification(true);
         json body;
         httplib::Headers headers = {
@@ -1866,14 +1834,22 @@ public:
     void handlePost(const httplib::Request& req, httplib::Response& res)
     {
         // 先解析JSON
-        json data = json::parse(req.body);
-        ////////////////////////////////////////////// 只处理消息事件, 其余事件todo
-        if (data["post_type"] != "message")
+        json data;
+        try
+        {
+            data = json::parse(req.body);
+        }catch(const json::parse_error& e) {
+            Logger::warn("接受 QQ 消息 JSON 解析失败: ", e.what());
+            res.status = 400;
+            res.set_content("{}", "application/json");
+            return;
+        }
+        //只处理消息事件, 其余事件todo
+        if (!data.contains("post_type") || data["post_type"] != "message")
         {
             res.set_content("{}", "text/plain");
             return;
         }
-
         // 构造 MessageContext
         MessageContext msgctx;
         msgctx = MessageManager::getMessageContext(data);
@@ -1891,10 +1867,12 @@ public:
 
 int main()
 {
+    Logger::info(" === 加载配置", " === ");
+    load_config();
     Logger::info(" === 创建管理器", " === ");
     Manager m;
     Logger::info(" === 开始监听", " === ");
     m.start();
     return 0;
 }
-// g++ src/main.cpp -O2 -Iinclude -o release/bot -lssl -lcrypto -lpthread
+// g++ src/main.cpp src/config.cpp -O2 -Iinclude -o release/bot -lssl -lcrypto -lpthread
