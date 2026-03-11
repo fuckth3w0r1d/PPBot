@@ -26,8 +26,46 @@
 - 编译命令
 
   ```shell
-  g++ src/main.cpp -O2 -Iinclude -o release/bot -lssl -lcrypto -lpthread
+  make
   ```
+
+### 项目结构
+
+```
+PPBot/
+│
+├─ include/                # 所有头文件
+│   ├─ httplib.h           # 第三方库
+│   ├─ json.hpp            # 第三方库 nlohmann/json
+│   ├─ logger.h            # 自定义的日志工具
+│   ├─ config.h            # 自定义的配置类头文件
+│   ├─ FileManager.h       # 自定义的文件管理类头文件
+│   └─ MessageManager.h    # 自定义的消息管理类头文件
+│
+├─ src/                    # 源代码实现
+│   ├─ managers/           # 工具类实现
+│   │    ├─ FileManager.cpp
+│   │    └─ MessageManager.cpp
+│   │
+│   ├─ config.cpp           # 配置类实现
+│   └─ main.cpp             # 服务器入口
+│
+├─ release/                # 最终生成的可执行文件
+│   └─ bot # 可执行文件
+|  
+├─ config.json.example     # 配置文件示例
+|
+├─ log/
+|   └─ (log.txt) # 产生的日志文件
+|
+├─ data/         # 项目运行产生并需要的数据文件  
+|   └─ ()
+|
+├─ cache/         # 项目产生的缓存文件
+|   └─ ()
+|
+└─ Makefile                # 编译项目
+```
 
 ### 主要特性
 
@@ -45,4 +83,10 @@
 参照 [NapCatQQ 使用文档](https://napneko.github.io/)
 
 配置 `http` 客户端和 `http`上报服务端，收发消息格式配置为 `array`
+
+```bash
+cp ./config.json.example ./config.json
+```
+然后进行相关配置
+
 

@@ -1,47 +1,73 @@
 {
+    "log": {
+        "file": {
+            "path": "/path/to/PPBot/log/log.txt",
+            "level": 1
+        },
+        "console": {
+            "level": 0
+        }
+    },
     "bot": {
         "qq": "123456789"
     },
     "server": {
         "host": "127.0.0.1",
-        "port": 8080,
+        "port": 3000,
         "access_token": ""
     },
     "client": {
-        "host": "127.0.0.1",
-        "port": 5700,
+        "host": "0.0.0.0",
+        "port": 8080,
         "access_token": ""
     },
-    "amap_api": {
-        "key": "your amp api key",
+    "amap": {
+        "key": "xxxxxxxxxxxxxxxxxxxxxxxxxxxx",
         "host": "restapi.amap.com",
         "port": 443,
         "path": "/v3/weather/weatherInfo"
     },
-    "ai_api": {
+    "ai": {
         "key": "sk-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
-        "model": "xxx",
-        "host": "api.siliconflow.cn",
+        "model": "deepseek-chat",
+        "host": "api.deepseek.com",
         "port": 443,
         "path": "/v1/chat/completions",
         "system_prompts": "",
-        "max_tokens": 4096
+        "max_tokens": 3200,
+        "max_rounds": 300
+    },
+    "ai2": {
+        "key": "xxx-xxxx-xxxx-xxxx-xxxx",
+        "model": "doubao-seed-2-0-lite-260215",
+        "host": "ark.cn-beijing.volces.com",
+        "port": 443,
+        "path": "/api/v3/chat/completions",
+        "max_tokens": 3200
     },
     "b23": {
         "app_id": "1109937557",
         "host": "api.bilibili.com",
         "port": 443,
-        "path": "/x/web-interface/view"
+        "query_path": "/x/web-interface/view",
+        "play_path": "/x/player/playurl"
     },
     "file": {
-        "download_size_limit": 300000000,
-        "cache_path": "path/to/cache",
+        "download_size_limit": 314572800,
+        "cache_path": "/path/to/PPBot/cache",
+        "data_path": "/path/to/PPBot/data",
         "cache_file_limit": 10,
-        "buffer_size": 6400
+        "download_buffer_size": 65536,
+        "save_frequency_seconds": 10
     },
     "random_img": {
         "host": "www.loliapi.com",
         "port": 443,
-        "path": "/bg/?id=23&type=json"
+        "path": "/bg/?type=json"
+    },
+    "eat": {
+        "host": "zj.v.api.aa1.cn",
+        "port": 443,
+        "path": "/api/eats/"
     }
 }
