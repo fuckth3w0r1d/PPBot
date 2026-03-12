@@ -30,7 +30,7 @@ bool TaskManager::canHandle(const MessageContext& msgctx)
 
 
 // 总的任务处理函数
-json TaskManager::handleTask(const MessageContext& msgctx)
+std::pair<json, std::string> TaskManager::handleTask(const MessageContext& msgctx)
 {
     for(auto& tsk_manager : tsk_managers)
     {

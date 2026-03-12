@@ -34,7 +34,7 @@ private:
     static ParsedMsgSegments parseMsgSegments(const json& msgsegs);
 
 public:
-    static void send_msg(const MessageContext& recv, const json& reply);
+    static void send_msg(const MessageContext& recv, const json& reply, const std::string& sendType);
     static MessageContext getMessageContext(const json& data);
     static json buildMsg(const std::string& msg_type, const std::string& msg_data);
 };

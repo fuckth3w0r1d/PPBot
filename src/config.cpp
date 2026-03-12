@@ -52,8 +52,10 @@ size_t DOWNLOAD_BUFFER_SIZE;
 size_t CACHE_FILE_LIMIT;
 
 std::string RANDOM_IMG_HOST;
+std::string RANDOM_IMG_HOST2;
 size_t RANDOM_IMG_PORT;
 std::string RANDOM_IMG_GET_PATH;
+std::string RANDOM_IMG_GET_PATH2;
 
 std::string EAT_HOST;
 size_t EAT_PORT;
@@ -127,8 +129,10 @@ void load_config(const std::string& path)
 
     // random_img
     RANDOM_IMG_HOST = data["random_img"]["host"].get<std::string>();
+    RANDOM_IMG_GET_PATH = data["random_img2"]["host"].get<std::string>();
     RANDOM_IMG_PORT = data["random_img"]["port"].get<size_t>();
     RANDOM_IMG_GET_PATH = data["random_img"]["path"].get<std::string>();
+    RANDOM_IMG_GET_PATH2 = data["random_img2"]["path"].get<std::string>();
 
     // eat
     EAT_HOST = data["eat"]["host"].get<std::string>();

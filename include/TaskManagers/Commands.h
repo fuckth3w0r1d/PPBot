@@ -13,9 +13,14 @@ using json = nlohmann::json;
 class Command{
 public:
     virtual std::string name() = 0;
+    virtual std::string sendType()
+    { // 默认直接发送
+        return "direct";
+    }
     virtual json execute(const std::string& args) = 0;
     virtual ~Command() = default;
 };
+ 
 
 ///////////
 // 各个文本指令
@@ -63,13 +68,14 @@ public:
     json execute(const std::string& args) override;
 };
 
-// 随机图片
+// 随机二次元图片
 class RandomImgCommand : public Command{
 private:
     std::string getImgUrl();
 
 public:
     std::string name() override;
+    std::string sendType() override; // 改用转发
     json execute(const std::string& args) override; 
 };
 
@@ -81,4 +87,15 @@ private:
 public:
     std::string name() override;
     json execute(const std::string& args) override;
+};
+
+// 随机图库图片
+class RandomImgCommand2 : public Command{
+private:
+    std::vector<std::string> getImgUrls();
+
+public:
+    std::string name() override;
+    std::string sendType() override; // 改用转发
+    json execute(const std::string& args) override; 
 };

@@ -754,7 +754,7 @@ bool ChatTaskManager::canHandle(const MessageContext& msgctx)
     return msgctx.pmsgsegs.at_me && (msgctx.msg_type == "group");
 }    
 
-json ChatTaskManager::handleTask(const MessageContext& msgctx)
+std::pair<json, std::string> ChatTaskManager::handleTask(const MessageContext& msgctx)
 {
     json result = json::array();
     result.emplace_back(MessageManager::buildMsg("at", msgctx.user_id));
@@ -770,7 +770,7 @@ json ChatTaskManager::handleTask(const MessageContext& msgctx)
         result.emplace_back(MessageManager::buildMsg("text", ChatWithAI(msgctx)));
     }
     dirty_bit.store(true, std::memory_order_relaxed);
-    return result;
+    return std::make_pair(result, "direct");
 }
 
 ChatTaskManager::~ChatTaskManager()

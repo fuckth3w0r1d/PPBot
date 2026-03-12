@@ -17,12 +17,12 @@ using json = nlohmann::json;
 class BaseTaskManager{
 public:
     virtual bool canHandle(const MessageContext& msgctx) = 0;
-    virtual json handleTask(const MessageContext& msgctx) = 0;
+    virtual std::pair<json, std::string> handleTask(const MessageContext& msgctx) = 0;
     virtual ~BaseTaskManager() = default;
 };
 
 ////////////
-// 被at的文本命令任务管理器
+// 文本命令任务管理器
 ////////////
 class CmdTaskManager : public BaseTaskManager{
 private: 
@@ -38,7 +38,7 @@ public:
     // 能否处理
     bool canHandle(const MessageContext& msgctx) override;
     // 处理某个被at的文本指令
-    json handleTask(const MessageContext& msgctx) override;
+    std::pair<json, std::string> handleTask(const MessageContext& msgctx) override;
 };
 
 
@@ -74,7 +74,7 @@ private:
     std::pair<std::string, std::string> handleBV(const json& data);
 public:
     bool canHandle(const MessageContext& msgctx) override;
-    json handleTask(const MessageContext& msgctx) override;
+    std::pair<json, std::string> handleTask(const MessageContext& msgctx) override;
 };
 
 // AI对话任务
@@ -183,7 +183,7 @@ private:
 public:
     ChatTaskManager();
     bool canHandle(const MessageContext& msgctx) override;
-    json handleTask(const MessageContext& msgctx) override;
+    std::pair<json, std::string> handleTask(const MessageContext& msgctx) override;
     ~ChatTaskManager();
 };
 
@@ -200,5 +200,5 @@ public:
     TaskManager();
     bool canHandle(const MessageContext& msgctx) override;
     // 总的任务处理函数
-    json handleTask(const MessageContext& msgctx) override;
+    std::pair<json, std::string> handleTask(const MessageContext& msgctx) override;
 };

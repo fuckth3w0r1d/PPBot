@@ -141,7 +141,7 @@ bool JsonTaskManager::canHandle(const MessageContext& msgctx)
     // 当群聊消息类型为 json 时能处理
     return (msgctx.msg_type == "group") && msgctx.pmsgsegs.has_json;
 }
-json JsonTaskManager::handleTask(const MessageContext& msgctx)
+std::pair<json, std::string> JsonTaskManager::handleTask(const MessageContext& msgctx)
 {
     const json& data = msgctx.pmsgsegs.json_data;
     if(data.contains("meta"))
@@ -159,7 +159,7 @@ json JsonTaskManager::handleTask(const MessageContext& msgctx)
                 }else{
                     result.emplace_back(MessageManager::buildMsg("text", "视频下载异常, 可能是视频太大了"));
                 }
-                return result;
+                return std::make_pair(result, "direct");
             }
         }
     }

@@ -44,8 +44,8 @@ CmdTaskManager::CmdTaskManager()
 // 能否处理
 bool CmdTaskManager::canHandle(const MessageContext& msgctx)
 {
-    // 仅能处理群聊中被at的消息
-    if(!(msgctx.pmsgsegs.at_me && (msgctx.msg_type == "group"))) return false;
+    // 仅能处理群聊的消息
+    if(msgctx.msg_type != "group") return false;
     if(msgctx.pmsgsegs.text.empty()) return false;
     // 先按照空格分割指令名称和参数（解释text时已经去除了前置空格）
     size_t pos = msgctx.pmsgsegs.text.find(' ');
@@ -53,8 +53,8 @@ bool CmdTaskManager::canHandle(const MessageContext& msgctx)
     return cmd_map.count(cmd_name); // 仅能处理指令表中存在的指令
 }
 
-// 处理某个被at的文本指令
-json CmdTaskManager::handleTask(const MessageContext& msgctx)
+// 处理某个文本指令
+std::pair<json, std::string> CmdTaskManager::handleTask(const MessageContext& msgctx)
 {
     // 执行指令
     // 先按照空格分割指令名称和参数
@@ -72,13 +72,20 @@ json CmdTaskManager::handleTask(const MessageContext& msgctx)
         cmd_args.erase(0, 1);
     }
     json result = json::array();
+    std::string sendType;
     if(cmd_map.count(cmd_name))
     {
         // 调用对应指令
-        result.emplace_back(cmd_map[cmd_name]->execute(cmd_args));
-        return result;
+        json tmp_result = cmd_map[cmd_name]->execute(cmd_args);
+        if(tmp_result.is_array())
+        {
+            result = tmp_result;
+        }else{
+            result.emplace_back(tmp_result);
+        }
+        return std::make_pair(result, cmd_map[cmd_name]->sendType());
     }
     result.emplace_back(MessageManager::buildMsg("text", "未知指令: " + cmd_name));
-    return result;
+    return std::make_pair(result, "direct");
 }
 

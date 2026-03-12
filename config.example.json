@@ -65,6 +65,11 @@
         "port": 443,
         "path": "/bg/?type=json"
     },
+    "random_img2": {
+        "host": "www.loliapi.com",
+        "port": 443,
+        "path": "/bg/?type=json"
+    },
     "eat": {
         "host": "zj.v.api.aa1.cn",
         "port": 443,

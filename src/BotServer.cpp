@@ -49,11 +49,11 @@ void BotServer::handlePost(const httplib::Request& req, httplib::Response& res)
     msgctx = MessageManager::getMessageContext(data);
     Logger::info("获取消息结构成功", msgctx.msg_segments);
     // 调用任务管理器 得到回复
-    json reply = tsk_manager.handleTask(msgctx);
+    auto [reply, sendType] = tsk_manager.handleTask(msgctx);
     Logger::info("回复内容: ", reply);
     if (!reply.empty())
     {
-        MessageManager::send_msg(msgctx, reply);
+        MessageManager::send_msg(msgctx, reply, sendType);
     }
     res.set_content("{}", "text/plain");
 }

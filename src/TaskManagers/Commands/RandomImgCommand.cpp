@@ -28,6 +28,11 @@ std::string RandomImgCommand::name()
     return "随机二次元图片";
 }
 
+std::string RandomImgCommand::sendType()
+{
+    return "forward";
+}
+
 json RandomImgCommand::execute(const std::string& args)
 {
     return MessageManager::buildMsg("image", getImgUrl());
