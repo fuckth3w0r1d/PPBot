@@ -9,9 +9,10 @@
 #include <regex>
 #include <atomic>
 #include <fstream>
+#define CPPHTTPLIB_OPENSSL_SUPPORT
 #include "httplib.h"
 #include "json.hpp"
-#include "logger.h"
+
 
 using json = nlohmann::json;
 

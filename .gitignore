@@ -9,5 +9,4 @@ log/*
 !data/.gitkeep
 !cache/.gitkeep
 !log/.gitkeep
-src/*.o
-src/managers/*.o
+release/*.o

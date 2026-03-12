@@ -1,4 +1,9 @@
-#include "MessageManager.h"
+#include "ToolManagers/MessageManager.h"
+#include "logger.h"
+#include "config.h"
+
+using json = nlohmann::json;
+
 ////////////
 // 消息管理器
 ///////////

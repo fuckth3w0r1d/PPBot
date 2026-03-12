@@ -1,6 +1,8 @@
-#define CPPHTTPLIB_OPENSSL_SUPPORT
-#include "FileManager.h"
+#include "ToolManagers/FileManager.h"
+#include "logger.h"
+#include "config.h"
 
+using json = nlohmann::json;
 
 //////////
 // 文件管理器
