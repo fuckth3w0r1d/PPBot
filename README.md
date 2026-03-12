@@ -34,37 +34,21 @@
 ```
 PPBot/
 │
-├─ include/                # 所有头文件
-│   ├─ httplib.h           # 第三方库
-│   ├─ json.hpp            # 第三方库 nlohmann/json
-│   ├─ logger.h            # 自定义的日志工具
-│   ├─ config.h            # 自定义的配置类头文件
-│   ├─ FileManager.h       # 自定义的文件管理类头文件
-│   └─ MessageManager.h    # 自定义的消息管理类头文件
-│
-├─ src/                    # 源代码实现
-│   ├─ managers/           # 工具类实现
-│   │    ├─ FileManager.cpp
-│   │    └─ MessageManager.cpp
-│   │
-│   ├─ config.cpp           # 配置类实现
-│   └─ main.cpp             # 服务器入口
-│
+├─ include/                # 所有头文件, 包括第三方库和自定义的头文件
+│          
+├─ src/                    # 所有源代码实现
+│    
 ├─ release/                # 最终生成的可执行文件
-│   └─ bot # 可执行文件
-|  
-├─ config.json.example     # 配置文件示例
+│   
+├─ config.example.json     # 配置文件示例
 |
-├─ log/
-|   └─ (log.txt) # 产生的日志文件
+├─ log/          # 产生的日志文件  
 |
 ├─ data/         # 项目运行产生并需要的数据文件  
-|   └─ ()
-|
-├─ cache/         # 项目产生的缓存文件
-|   └─ ()
-|
-└─ Makefile                # 编译项目
+|   
+├─ cache/        # 项目产生的缓存文件
+|   
+└─ Makefile      
 ```
 
 ### 主要特性
