@@ -47,8 +47,7 @@ bool CmdTaskManager::canHandle(const MessageContext& msgctx)
     // 仅能处理群聊的消息
     if(msgctx.msg_type != "group") return false;
     if(msgctx.pmsgsegs.text.empty()) return false;
-    if(msgctx.pmsgsegs.at_me) return true;
-    // 先按照空格分割指令名称和参数（解释text时已经去除了前置空格）
+    // 先按照空格分割指令名称和参数（解析text时已经去除了前置空格）
     size_t pos = msgctx.pmsgsegs.text.find(' ');
     std::string cmd_name = msgctx.pmsgsegs.text.substr(0, pos);
     return cmd_map.count(cmd_name); // 仅能处理指令表中存在的指令
