@@ -2,10 +2,10 @@
 #include "logger.h"
 #include "config.h"
 
-std::vector<std::string> RandomImgCommand2::getImgUrls()
+std::vector<std::string> RandomImgCommand2::getImgUrls(const std::string& tag)
 {
     httplib::SSLClient cli(RANDOM_IMG_HOST2, RANDOM_IMG_PORT);
-    auto res = cli.Get(RANDOM_IMG_GET_PATH2);
+    auto res = cli.Get(RANDOM_IMG_GET_PATH2 + "?tag=" + tag);
     if(!res)
     {
         Logger::error("随机图片网络请求失败", httplib::to_string(res.error()));
@@ -35,7 +35,7 @@ std::string RandomImgCommand2::sendType()
 
 json RandomImgCommand2::execute(const std::string& args)
 {
-    std::vector<std::string> img_urls = getImgUrls();
+    std::vector<std::string> img_urls = getImgUrls(args);
     json result = json::array();
     for(const auto& url : img_urls)
     {

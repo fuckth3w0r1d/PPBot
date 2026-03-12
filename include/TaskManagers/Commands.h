@@ -92,7 +92,7 @@ public:
 // 随机图库图片
 class RandomImgCommand2 : public Command{
 private:
-    std::vector<std::string> getImgUrls();
+    std::vector<std::string> getImgUrls(const std::string& tag);
 
 public:
     std::string name() override;
