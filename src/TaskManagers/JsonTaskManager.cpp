@@ -50,7 +50,7 @@ JsonTaskManager::BVinfo JsonTaskManager::getBVinfo(const json& raw_data)
     bvinfo.bvid = data["bvid"].get<std::string>();
     bvinfo.title = data["title"].get<std::string>();
     bvinfo.up = data["owner"]["name"].get<std::string>();
-    bvinfo.face = data["owner"]["face"].get<std::string>();
+    bvinfo.face = data["pages"][0]["first_frame"].get<std::string>();
     bvinfo.view = data["stat"]["view"].get<int>();
     bvinfo.reply = data["stat"]["reply"].get<int>();
     bvinfo.favorite = data["stat"]["favorite"].get<int>();
@@ -89,7 +89,7 @@ void JsonTaskManager::getBVUrlandSize(const std::string& bvid, const std::string
 }   
 
 // 处理B站视频
-std::pair<std::string, std::string> JsonTaskManager::handleBV(const json& data)
+json JsonTaskManager::handleBV(const json& data)
 {
     std::string bvid = getBVid(data);
     Logger::info("Bvid: ", bvid);
@@ -114,17 +114,19 @@ std::pair<std::string, std::string> JsonTaskManager::handleBV(const json& data)
     }
     // 解析并处理B站视频信息
     BVinfo bvinfo = getBVinfo(raw_bvinfo);
-    std::string result;
-    result = "视频标题: " + bvinfo.title;
-    result += "\nup主: " + bvinfo.up;
-    result += "\nup主头像: " + bvinfo.face;
-    result += "\nbvid: " + bvinfo.bvid;
-    result += "\n观看次数: " + std::to_string(bvinfo.view);
-    result += "\n评论数: " + std::to_string(bvinfo.reply);
-    result += "\n收藏数: " + std::to_string(bvinfo.favorite);
-    result += "\n投币数: " + std::to_string(bvinfo.coin);
-    result += "\n分享数: " + std::to_string(bvinfo.share);
-    result += "\n点赞数: " + std::to_string(bvinfo.like);
+    std::string result_text;
+    result_text += "📺 视频信息\n";
+    result_text += "────────────────\n";
+    result_text += "🎬 标题: " + bvinfo.title + "\n";
+    result_text += "👤 UP主: " + bvinfo.up + "\n";
+    result_text += "🆔 BVID: " + bvinfo.bvid + "\n";
+    result_text += "────────────────\n";
+    result_text += "👀 播放量: " + std::to_string(bvinfo.view) + "\n";
+    result_text += "💬 评论: " + std::to_string(bvinfo.reply) + "\n";
+    result_text += "⭐ 收藏: " + std::to_string(bvinfo.favorite) + "\n";
+    result_text += "💰 投币: " + std::to_string(bvinfo.coin) + "\n";
+    result_text += "🔗 分享: " + std::to_string(bvinfo.share) + "\n";
+    result_text += "👍 点赞: " + std::to_string(bvinfo.like) + "\n";
     // 下载B站视频
     httplib::Headers headers = {
         {"Referer", "https://www.bilibili.com"},
@@ -133,7 +135,17 @@ std::pair<std::string, std::string> JsonTaskManager::handleBV(const json& data)
     // 先清理缓存
     FileManager::cleanCache();
     std::string video_path = FileManager::downloadFile(bvinfo.url, headers, CACHE_PATH, bvinfo.bvid + ".mp4");
-    return std::make_pair(result, video_path);
+    // 构造消息段
+    json result = json::array();
+    result.emplace_back(MessageManager::buildMsg("image", bvinfo.face));
+    result.emplace_back(MessageManager::buildMsg("text", result_text));
+    if(video_path.empty())
+    {
+        result.emplace_back(MessageManager::buildMsg("text", "视频下载异常, 可能是视频太大了"));
+    }else{
+        result.emplace_back(MessageManager::buildMsg("video", "file://" + video_path));
+    }
+    return result;
 }
 
 bool JsonTaskManager::canHandle(const MessageContext& msgctx)
@@ -150,15 +162,7 @@ std::pair<json, std::string> JsonTaskManager::handleTask(const MessageContext& m
         {
             if(data["meta"]["detail_1"]["appid"].get<std::string>() == B23_APPID)
             { // 暂时只处理B站分享视频
-                auto [reply_text, video_path] = handleBV(data);
-                json result = json::array();
-                result.emplace_back(MessageManager::buildMsg("text", reply_text));
-                if(!video_path.empty())
-                {
-                    result.emplace_back(MessageManager::buildMsg("video", "file://" + video_path));
-                }else{
-                    result.emplace_back(MessageManager::buildMsg("text", "视频下载异常, 可能是视频太大了"));
-                }
+                auto result = handleBV(data);
                 return std::make_pair(result, "direct");
             }
         }

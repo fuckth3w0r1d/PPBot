@@ -53,7 +53,7 @@ private:
         std::string bvid;
         std::string cid; // 获取视频需要的请求参数
         std::string up; // up主昵称
-        std::string face; // 头像url
+        std::string face; // 封面url
         std::string url; // 视频URL
         size_t size; // 视频大小
         int view; // 观看次数
@@ -71,7 +71,7 @@ private:
     void getBVUrlandSize(const std::string& bvid, const std::string& cid, BVinfo& bvinfo);
     
     // 处理B站视频
-    std::pair<std::string, std::string> handleBV(const json& data);
+    json handleBV(const json& data);
 public:
     bool canHandle(const MessageContext& msgctx) override;
     std::pair<json, std::string> handleTask(const MessageContext& msgctx) override;
