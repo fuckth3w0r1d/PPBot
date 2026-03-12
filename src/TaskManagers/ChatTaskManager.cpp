@@ -761,7 +761,7 @@ std::pair<json, std::string> ChatTaskManager::handleTask(const MessageContext& m
     if(msgctx.pmsgsegs.text.empty())
     {
         result.emplace_back(MessageManager::buildMsg("text", "请输入对话内容, 以/起始的对话内容由无上下文AI直接处理, 输入 帮助 可查看命令列表"));
-        return result;
+        return std::make_pair(result, "direct");
     }
     if(msgctx.pmsgsegs.text[0] == '/')
     {
