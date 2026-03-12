@@ -130,7 +130,7 @@ void load_config(const std::string& path)
 
     // random_img
     RANDOM_IMG_HOST = data["random_img"]["host"].get<std::string>();
-    RANDOM_IMG_GET_PATH = data["random_img2"]["host"].get<std::string>();
+    RANDOM_IMG_HOST2 = data["random_img2"]["host"].get<std::string>();
     RANDOM_IMG_PORT = data["random_img"]["port"].get<size_t>();
     RANDOM_IMG_PORT2 = data["random_img2"]["port"].get<size_t>();
     RANDOM_IMG_GET_PATH = data["random_img"]["path"].get<std::string>();
