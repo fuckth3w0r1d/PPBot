@@ -36,6 +36,7 @@ CmdTaskManager::CmdTaskManager()
     registerCommand(std::make_unique<TimeCommand>());
     registerCommand(std::make_unique<WeatherCommand>());
     registerCommand(std::make_unique<RandomImgCommand>());
+    registerCommand(std::make_unique<RandomImgCommand2>());
     registerCommand(std::make_unique<MealCommand>());
     // 后续文本指令也在此注册
     registerCommand(std::make_unique<HelpCommand>(getCommandList()));
