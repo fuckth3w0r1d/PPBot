@@ -45,7 +45,7 @@ CmdTaskManager::CmdTaskManager()
 bool CmdTaskManager::canHandle(const MessageContext& msgctx)
 {
     // 仅能处理群聊的消息
-    if(msgctx.msg_type != "group") return false;
+    if(!(msgctx.pmsgsegs.at_me && (msgctx.msg_type == "group"))) return false;
     if(msgctx.pmsgsegs.text.empty()) return false;
     // 先按照空格分割指令名称和参数（解析text时已经去除了前置空格）
     size_t pos = msgctx.pmsgsegs.text.find(' ');
