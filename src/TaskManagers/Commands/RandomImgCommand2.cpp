@@ -4,7 +4,7 @@
 
 std::vector<std::string> RandomImgCommand2::getImgUrls(const std::string& tag)
 {
-    httplib::SSLClient cli(RANDOM_IMG_HOST2, RANDOM_IMG_PORT);
+    httplib::Client cli(RANDOM_IMG_HOST2, RANDOM_IMG_PORT);
     auto res = cli.Get(RANDOM_IMG_GET_PATH2 + "?tag=" + tag);
     if(!res)
     {
