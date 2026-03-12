@@ -58,6 +58,7 @@ extern size_t CACHE_FILE_LIMIT;
 extern std::string RANDOM_IMG_HOST;
 extern std::string RANDOM_IMG_HOST2;
 extern size_t RANDOM_IMG_PORT;
+extern size_t RANDOM_IMG_PORT2;
 extern std::string RANDOM_IMG_GET_PATH;
 extern std::string RANDOM_IMG_GET_PATH2;
 
