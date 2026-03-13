@@ -17,8 +17,11 @@ std::string MusicCommand::getMusicId(const std::string& tag)
         Logger::error("获取歌曲 id  异常响应体:", json::parse(res->body).dump(4));
         return "";
     }
+    Logger::debug("开始获取id:", "解析body");
     json data = json::parse(res->body);
+    Logger::debug("开始获取id:", "提取id");
     std::string id = data["result"]["songs"][0]["id"].get<std::string>();
+    Logger::debug("获取id:", id);
     return id;
 }
 
@@ -37,8 +40,11 @@ std::string MusicCommand::getMusicUrl(const std::string& id)
         Logger::error("随机图片请求 异常响应体:", json::parse(res->body).dump(4));
         return "";
     }
+    Logger::debug("开始获取url:", "解析body");
     json data = json::parse(res->body);
+    Logger::debug("开始获取url:", "提取url");
     std::string url = data["data"][0]["url"].get<std::string>();
+    Logger::debug("获取url:", url);
     return url;
 }
 
