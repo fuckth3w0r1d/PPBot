@@ -67,5 +67,13 @@ extern std::string EAT_HOST;
 extern size_t EAT_PORT;
 extern std::string EAT_GET_PATH;
 
+// music
+
+extern std::string MUSIC_HOST;
+extern size_t MUSIC_PORT;
+extern std::string MUSIC_GET_URL_PATH;
+extern std::string MUSIC_GET_ID_PATH;
+
+
 // 初始化函数
 void load_config(const std::string& path = "/home/r3t2/PPBot/config.json");

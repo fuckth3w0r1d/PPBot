@@ -62,6 +62,12 @@ std::string EAT_HOST;
 size_t EAT_PORT;
 std::string EAT_GET_PATH;
 
+std::string MUSIC_HOST;
+size_t MUSIC_PORT;
+std::string MUSIC_GET_URL_PATH;
+std::string MUSIC_GET_ID_PATH;
+
+
 // 加载函数
 void load_config(const std::string& path)
 {
@@ -140,4 +146,10 @@ void load_config(const std::string& path)
     EAT_HOST = data["eat"]["host"].get<std::string>();
     EAT_PORT = data["eat"]["port"].get<size_t>();
     EAT_GET_PATH = data["eat"]["path"].get<std::string>();
+
+    // music
+    MUSIC_HOST = data["music"]["host"].get<std::string>();
+    MUSIC_PORT = data["music"]["port"].get<size_t>();
+    MUSIC_GET_URL_PATH = data["music"]["url_path"].get<std::string>();
+    MUSIC_GET_ID_PATH = data["music"]["id_path"].get<std::string>();
 }

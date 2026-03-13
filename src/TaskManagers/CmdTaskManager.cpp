@@ -38,6 +38,7 @@ CmdTaskManager::CmdTaskManager()
     registerCommand(std::make_unique<RandomImgCommand>());
     registerCommand(std::make_unique<RandomImgCommand2>());
     registerCommand(std::make_unique<MealCommand>());
+    registerCommand(std::make_unique<MusicCommand>());
     // 后续文本指令也在此注册
     registerCommand(std::make_unique<HelpCommand>(getCommandList()));
 }

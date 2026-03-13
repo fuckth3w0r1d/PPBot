@@ -74,5 +74,11 @@
         "host": "zj.v.api.aa1.cn",
         "port": 443,
         "path": "/api/eats/"
+    },
+    "music": {
+        "host": "iwenwiki.com",
+        "port": 3000,
+        "url_path": "/song/url/v1",
+        "id_path": "/search"
     }
 }

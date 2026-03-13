@@ -99,3 +99,13 @@ public:
     std::string sendType() override; // 改用转发
     json execute(const std::string& args) override; 
 };
+
+// 点歌
+class MusicCommand : public Command{
+private:
+    std::string getMusicUrl(const std::string& id);
+    std::string getMusicId(const std::string& tag);
+public:
+    std::string name() override;
+    json execute(const std::string& args) override; 
+};
