@@ -20,7 +20,7 @@ std::string MusicCommand::getMusicId(const std::string& tag)
     Logger::debug("开始获取id:", "解析body");
     json data = json::parse(res->body);
     Logger::debug("开始获取id:", "提取id");
-    std::string id = data["result"]["songs"][0]["id"].get<std::string>();
+    std::string id = std::to_string(data["result"]["songs"][0]["id"].get<size_t>());
     Logger::debug("获取id:", id);
     return id;
 }
