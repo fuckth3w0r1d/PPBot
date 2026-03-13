@@ -17,11 +17,11 @@ std::string MusicCommand::getMusicId(const std::string& tag)
         Logger::error("获取歌曲 id  异常响应体:", json::parse(res->body).dump(4));
         return "";
     }
-    Logger::debug("开始获取id:", "解析body");
+    // Logger::debug("开始获取id:", "解析body");
     json data = json::parse(res->body);
-    Logger::debug("开始获取id:", "提取id");
+    // Logger::debug("开始获取id:", "提取id");
     std::string id = std::to_string(data["result"]["songs"][0]["id"].get<size_t>());
-    Logger::debug("获取id:", id);
+    // Logger::debug("获取id:", id);
     return id;
 }
 
@@ -40,11 +40,11 @@ std::string MusicCommand::getMusicUrl(const std::string& id)
         Logger::error("随机图片请求 异常响应体:", json::parse(res->body).dump(4));
         return "";
     }
-    Logger::debug("开始获取url:", "解析body");
+    // Logger::debug("开始获取url:", "解析body");
     json data = json::parse(res->body);
-    Logger::debug("开始获取url:", "提取url");
+    // Logger::debug("开始获取url:", "提取url");
     std::string url = data["data"][0]["url"].get<std::string>();
-    Logger::debug("获取url:", url);
+    // Logger::debug("获取url:", url);
     return url;
 }
 
@@ -61,13 +61,15 @@ json MusicCommand::execute(const std::string& args)
         return MessageManager::buildMsg("text", "请输入歌曲名称");
     }
     std::string id = getMusicId(args);
+    Logger::info("获取歌曲id: ", id);
     if(id.empty())
     {
         result = MessageManager::buildMsg("text", "搜索取歌曲失败");
     }else{
         std::string url = getMusicUrl(id);
+        Logger::info("获取歌曲url: ", url);
         result = MessageManager::buildMsg("record", url);
-        Logger::debug("消息构造成功", result);
+        // Logger::debug("消息构造成功", result);
     }
     return result;
 }
