@@ -38,7 +38,7 @@ std::string MusicCommand::getMusicUrl(const std::string& id)
         return "";
     }
     json data = json::parse(res->body);
-    std::string url = data[0]["url"].get<std::string>();
+    std::string url = data["data"][0]["url"].get<std::string>();
     return url;
 }
 
@@ -50,6 +50,10 @@ std::string MusicCommand::name()
 json MusicCommand::execute(const std::string& args)
 {
     json result = json::array();
+    if(args.empty())
+    {
+        return MessageManager::buildMsg("text", "请输入歌曲名称");
+    }
     std::string id = getMusicId(args);
     if(id.empty())
     {
