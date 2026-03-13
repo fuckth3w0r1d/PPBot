@@ -55,7 +55,7 @@ std::string MusicCommand::name()
 
 json MusicCommand::execute(const std::string& args)
 {
-    json result = json::array();
+    json result;
     if(args.empty())
     {
         return MessageManager::buildMsg("text", "请输入歌曲名称");
@@ -63,8 +63,11 @@ json MusicCommand::execute(const std::string& args)
     std::string id = getMusicId(args);
     if(id.empty())
     {
-        result.emplace_back(MessageManager::buildMsg("text", "搜索取歌曲失败"));
+        result = MessageManager::buildMsg("text", "搜索取歌曲失败");
     }else{
-        result.emplace_back(MessageManager::buildMsg("record", getMusicUrl(id)));
+        std::string url = getMusicUrl(id);
+        result = MessageManager::buildMsg("record", url);
+        Logger::debug("消息构造成功", result);
     }
+    return result;
 }
