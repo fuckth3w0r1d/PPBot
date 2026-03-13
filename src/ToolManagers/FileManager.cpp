@@ -83,11 +83,13 @@ void FileManager::cleanCache()
         Logger::info("缓存文件数量可接受, 无需清理, 当前缓存文件数量: ", files.size());
         return;
     }
-    // 按最后修改时间排序（最旧的在前）
-    std::sort(files.begin(), files.end(), 
-                [](const std::filesystem::path& a, const std::filesystem::path& b){
-                    return std::filesystem::last_write_time(a) < std::filesystem::last_write_time(b);
-                });
+    // 按最后修改时间排序（最大最旧的在前）
+    std::sort(files.begin(), files.end(), [](const std::filesystem::path& a, const std::filesystem::path& b){
+            auto size_a = std::filesystem::file_size(a);
+            auto size_b = std::filesystem::file_size(b);
+            if (size_a != size_b) return size_a > size_b;  // 大的在前
+            else return std::filesystem::last_write_time(a) < std::filesystem::last_write_time(b); // 旧的在前
+    });
     // 计算需要删除的数量
     size_t files_to_delete = files.size() - CACHE_FILE_LIMIT;
     Logger::info("缓存文件数量超过限制, 将删除最旧的文件, 需清理文件数: ", files_to_delete);
