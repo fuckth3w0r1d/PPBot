@@ -209,7 +209,7 @@ json MessageManager::buildMsg(const std::string& msg_type, const std::string& ms
         result["data"] = data;
         result["type"] = msg_type;
     }
-    if(msg_type == "image" || msg_type == "video")
+    if(msg_type == "image" || msg_type == "video" || msg_type == "record")
     {
         json data;
         data["file"] = msg_data;
