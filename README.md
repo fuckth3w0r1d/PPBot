@@ -1,4 +1,5 @@
-## 基于 NapCatQQ 搭建的简易 qq bot
+## PPBot
+### 基于 NapCatQQ 搭建的简易 qq bot
 使用 Cpp 编写的 qq 机器人, 实现了一些文本指令响应、`Json`卡片分享解析和AI对话功能。
 
 ### 环境说明
@@ -32,23 +33,49 @@
 ### 项目结构
 
 ```
-PPBot/
-│
-├─ include/                # 所有头文件, 包括第三方库和自定义的头文件
-│          
-├─ src/                    # 所有源代码实现
-│    
-├─ release/                # 最终生成的可执行文件
-│   
-├─ config.example.json     # 配置文件示例
-|
-├─ log/          # 产生的日志文件  
-|
-├─ data/         # 项目运行产生并需要的数据文件  
-|   
-├─ cache/        # 项目产生的缓存文件
-|   
-└─ Makefile      
+├── Makefile  
+├── README.md
+├── cache       # 运行时的缓存数据
+├── config.example.json # 配置文件示例
+├── data        # 运行产生的数据文件
+├── include     # 所有头文件, 包括第三方库
+│   ├── BotServer.h
+│   ├── TaskManagers
+│   │   ├── Commands.h
+│   │   └── TaskManagers.h
+│   ├── ToolManagers
+│   │   ├── FileManager.h
+│   │   └── MessageManager.h
+│   ├── config.h
+│   ├── httplib.h
+│   ├── json.hpp
+│   └── logger.h
+├── log         # 日志文件目录
+├── release     # 编译产物
+│   ├── TaskManagers
+│   │   └── Commands
+│   ├── ToolManagers
+│   └── bot
+└── src         # 所有源码实现
+    ├── BotServer.cpp
+    ├── TaskManagers
+    │   ├── ChatTaskManager.cpp
+    │   ├── CmdTaskManager.cpp
+    │   ├── Commands
+    │   │   ├── HelpCommand.cpp
+    │   │   ├── MealCommand.cpp
+    │   │   ├── MusicCommand.cpp
+    │   │   ├── RandomImgCommand.cpp
+    │   │   ├── RandomImgCommand2.cpp
+    │   │   ├── TimeCommand.cpp
+    │   │   └── WeatherCommand.cpp
+    │   ├── JsonTaskManager.cpp
+    │   └── TaskManager.cpp
+    ├── ToolManagers
+    │   ├── FileManager.cpp
+    │   └── MessageManager.cpp
+    ├── config.cpp
+    └── main.cpp
 ```
 
 ### 主要特性
