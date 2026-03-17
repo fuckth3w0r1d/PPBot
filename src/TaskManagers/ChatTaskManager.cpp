@@ -262,7 +262,7 @@ bool ChatTaskManager::UpdateBotPersona(const std::string& group_id)
     json messages = json::array();
     messages.push_back({
         {"role", "system"},
-        {"content", "<1>以下是你目前的人格" + getBotPersona(group_id) + "<2>接下来输入一系列某个群聊内用户和bot的对话历史, 请融合并生成新的100字人格, 但不要涉及名字服装等等私人化定制内容"}
+        {"content", "现在你为我完成一个任务：以下是某个聊天机器人目前的人格" + getBotPersona(group_id) + "接下来输入一系列user和这个assitant的对话历史(不是和你), 请你融合并生成新的100字人格, 但不要涉及名字服装等等私人化定制内容, 返回给我新的机器人格描述"}
     });
     // 获取群聊的留存对话历史
     std::vector<SessionMemCtx> history = getGroupSessionHistory(group_id);
