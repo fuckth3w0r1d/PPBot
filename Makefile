@@ -14,9 +14,18 @@ DEPS := $(OBJS:.o=.d)
 
 # 目标文件
 TARGET = release/bot
+TEST_TARGET = release/tests/chat_test
+TEST_OBJS = $(filter-out release/main.o,$(OBJS))
 
 # 默认目标
 all: $(TARGET)
+
+test: $(TEST_TARGET)
+	./$(TEST_TARGET)
+
+$(TEST_TARGET): tests/chat_test.cpp $(TEST_OBJS)
+	@mkdir -p $(dir $@)
+	$(CXX) $(CXXFLAGS) -o $@ $^ $(LDFLAGS)
 
 # 链接目标
 $(TARGET): $(OBJS)
@@ -37,4 +46,4 @@ release/%.o: src/%.cpp
 clean:
 	rm -rf release
 
-.PHONY: all clean
+.PHONY: all clean test

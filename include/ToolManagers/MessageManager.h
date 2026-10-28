@@ -2,6 +2,7 @@
 
 #include <string>
 #include <vector>
+#include <cstdint>
 #define CPPHTTPLIB_OPENSSL_SUPPORT
 #include "httplib.h"
 #include "json.hpp"
@@ -26,6 +27,18 @@ struct MessageContext{
     std::string msg_type;
     json msg_segments;
     ParsedMsgSegments pmsgsegs;
+    std::string message_id;
+    std::string nickname;
+    std::string card;
+    std::string reply_to;
+    int64_t timestamp = 0;
+    uint64_t timeline_sequence = 0;
+    bool reply_to_bot = false;
+};
+
+struct SentMessage{
+    json segments;
+    std::string message_id;
 };
 
 // 消息管理器
@@ -34,7 +47,7 @@ private:
     static ParsedMsgSegments parseMsgSegments(const json& msgsegs);
 
 public:
-    static void send_msg(const MessageContext& recv, const json& reply, const std::string& sendType);
+    static std::vector<SentMessage> send_msg(const MessageContext& recv, const json& reply, const std::string& sendType);
     static MessageContext getMessageContext(const json& data);
     static json buildMsg(const std::string& msg_type, const std::string& msg_data);
 };

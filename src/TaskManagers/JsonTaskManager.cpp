@@ -150,8 +150,11 @@ json JsonTaskManager::handleBV(const json& data)
 
 bool JsonTaskManager::canHandle(const MessageContext& msgctx)
 {
-    // 当群聊消息类型为 json 时能处理
-    return (msgctx.msg_type == "group") && msgctx.pmsgsegs.has_json;
+    if(msgctx.msg_type != "group" || !msgctx.pmsgsegs.has_json) return false;
+    const auto& data = msgctx.pmsgsegs.json_data;
+    return data.is_object() && data.contains("meta") && data["meta"].is_object() &&
+        data["meta"].contains("detail_1") && data["meta"]["detail_1"].is_object() &&
+        data["meta"]["detail_1"].contains("appid") && data["meta"]["detail_1"]["appid"] == B23_APPID;
 }
 std::pair<json, std::string> JsonTaskManager::handleTask(const MessageContext& msgctx)
 {

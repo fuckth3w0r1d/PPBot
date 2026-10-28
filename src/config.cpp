@@ -1,6 +1,8 @@
 #include "config.h"
 #include <fstream>
 #include <iostream>
+#include <cmath>
+#include <stdexcept>
 #include "json.hpp"
 
 using json = nlohmann::json;
@@ -11,6 +13,7 @@ std::size_t LOG_FILE_LEVEL = 1;
 std::size_t LOG_CONSOLE_LEVEL = 0;  
 
 std::string BOT_QQ;
+std::string BOT_NAME = "Bot";
 
 std::string SERVER_HOST;
 size_t SERVER_PORT;
@@ -21,17 +24,26 @@ size_t CLIENT_PORT;
 std::string CLIENT_TOKEN;
 
 std::string AI_KEY;
-std::string AI_KEY2;
 std::string AI_HOST;
-std::string AI_HOST2;
 size_t AI_PORT;
 std::string AI_POST_PATH;
-std::string AI_POST_PATH2;
 std::string AI_MODEL;
-std::string AI_MODEL2;
 std::string AI_SYS_PROMPTS;
 size_t AI_MAX_TOKENS;
 size_t AI_MAX_CHAT_ROUNDS;
+size_t AI_MAX_MESSAGES = 120;
+size_t AI_CONTEXT_BYTES = 64000;
+size_t AI_TIMEOUT_SECONDS = 60;
+std::string JUDGE_KEY;
+std::string JUDGE_HOST;
+size_t JUDGE_PORT = 443;
+std::string JUDGE_POST_PATH;
+std::string JUDGE_MODEL;
+size_t JUDGE_MAX_TOKENS = 16;
+size_t JUDGE_TIMEOUT_SECONDS = 5;
+size_t JUDGE_MAX_MESSAGES = 12;
+size_t JUDGE_CONTEXT_BYTES = 12000;
+double CHAT_REPLY_PROBABILITY = 0.1;
 
 std::string AMAP_KEY;
 std::string AMAP_HOST;
@@ -88,6 +100,7 @@ void load_config(const std::string& path)
     LOG_CONSOLE_LEVEL = data["log"]["console"]["level"].get<std::size_t>();
     // bot
     BOT_QQ = data["bot"]["qq"].get<std::string>();
+    BOT_NAME = data["bot"].value("name", "Bot");
 
     // server
     SERVER_HOST = data["server"]["host"].get<std::string>();
@@ -101,17 +114,39 @@ void load_config(const std::string& path)
 
     // ai
     AI_KEY = data["ai"]["key"].get<std::string>();
-    AI_KEY2 = data["ai2"]["key"].get<std::string>();
     AI_HOST = data["ai"]["host"].get<std::string>();
-    AI_HOST2 = data["ai2"]["host"].get<std::string>();
     AI_PORT = data["ai"]["port"].get<size_t>();
     AI_POST_PATH = data["ai"]["path"].get<std::string>();
-    AI_POST_PATH2 = data["ai2"]["path"].get<std::string>();
     AI_MODEL = data["ai"]["model"].get<std::string>();
-    AI_MODEL2 = data["ai2"]["model"].get<std::string>();
     AI_SYS_PROMPTS = data["ai"]["system_prompts"].get<std::string>();
     AI_MAX_TOKENS = data["ai"]["max_tokens"].get<size_t>();
     AI_MAX_CHAT_ROUNDS = data["ai"]["max_rounds"].get<size_t>();
+    AI_MAX_MESSAGES = data["ai"].value("max_messages", size_t{120});
+    AI_CONTEXT_BYTES = data["ai"].value("context_bytes", size_t{64000});
+    AI_TIMEOUT_SECONDS = data["ai"].value("timeout_seconds", size_t{60});
+    CHAT_REPLY_PROBABILITY = data["ai"].value("reply_probability", 0.1);
+    const auto& judge = data.at("judge");
+    JUDGE_KEY = judge.at("key").get<std::string>();
+    JUDGE_HOST = judge.at("host").get<std::string>();
+    JUDGE_PORT = judge.value("port", size_t{443});
+    JUDGE_POST_PATH = judge.at("path").get<std::string>();
+    JUDGE_MODEL = judge.at("model").get<std::string>();
+    JUDGE_MAX_TOKENS = judge.value("max_tokens", size_t{16});
+    JUDGE_TIMEOUT_SECONDS = judge.value("timeout_seconds", size_t{5});
+    JUDGE_MAX_MESSAGES = judge.value("max_messages", size_t{12});
+    JUDGE_CONTEXT_BYTES = judge.value("context_bytes", size_t{12000});
+    if(!std::isfinite(CHAT_REPLY_PROBABILITY) || CHAT_REPLY_PROBABILITY < 0 || CHAT_REPLY_PROBABILITY > 1)
+        throw std::invalid_argument("ai.reply_probability 必须在 0 到 1 之间");
+    if(AI_MAX_TOKENS == 0 || JUDGE_MAX_TOKENS == 0 || AI_MAX_MESSAGES == 0 ||
+       JUDGE_MAX_MESSAGES == 0 || JUDGE_MAX_MESSAGES > AI_MAX_MESSAGES ||
+       AI_CONTEXT_BYTES < 512 || JUDGE_CONTEXT_BYTES < 512 ||
+       AI_MAX_TOKENS > (AI_CONTEXT_BYTES - 512) / 4 ||
+       JUDGE_MAX_TOKENS > (JUDGE_CONTEXT_BYTES - 512) / 4 ||
+       JUDGE_CONTEXT_BYTES > AI_CONTEXT_BYTES || AI_MAX_CHAT_ROUNDS == 0 ||
+       AI_TIMEOUT_SECONDS == 0 || JUDGE_TIMEOUT_SECONDS == 0 ||
+       AI_TIMEOUT_SECONDS > 86400 || JUDGE_TIMEOUT_SECONDS > 86400 ||
+       AI_PORT == 0 || AI_PORT > 65535 || JUDGE_PORT == 0 || JUDGE_PORT > 65535)
+        throw std::invalid_argument("AI 窗口、预算、端口或超时配置无效");
 
     // amap
     AMAP_KEY = data["amap"]["key"].get<std::string>();
@@ -131,6 +166,7 @@ void load_config(const std::string& path)
     CACHE_PATH = data["file"]["cache_path"].get<std::string>();
     DATA_PATH = data["file"]["data_path"].get<std::string>();
     SAVE_FREQUENCY = data["file"]["save_frequency_seconds"].get<size_t>();
+    if(SAVE_FREQUENCY == 0) throw std::invalid_argument("保存间隔必须大于 0");
     DOWNLOAD_BUFFER_SIZE = data["file"]["download_buffer_size"].get<size_t>();
     CACHE_FILE_LIMIT = data["file"]["cache_file_limit"].get<size_t>();
 

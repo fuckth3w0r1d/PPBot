@@ -4,6 +4,8 @@
 #include <memory>
 #include <mutex>
 #include <shared_mutex>
+#include <condition_variable>
+#include <thread>
 
 #include "ToolManagers/MessageManager.h"
 #include "ToolManagers/FileManager.h"
@@ -80,108 +82,29 @@ public:
 // AI对话任务
 class ChatTaskManager : public BaseTaskManager{
 private:
-    // 记录每个 session 对话轮数
-    static std::unordered_map<std::string, size_t> session_round_counter;
-    static std::shared_mutex session_round_counter_mutex;
-    // 记录每个群聊对话轮数
-    static std::unordered_map<std::string, size_t> group_round_counter;
-    static std::shared_mutex group_round_counter_mutex;
-    // 保存 session 对话轮数到数据文件
-    static bool saveSessionRoundCounter();
-    // 加载 session 对话轮数
-    bool loadSessionRoundCounter();
+    std::mutex state_mutex;
+    std::condition_variable timer_condition;
+    std::thread timer;
+    bool running = true;
+    uint64_t next_sequence = 0;
+    uint64_t state_version = 0;
+    uint64_t saved_version = 0;
+    json group_timeline = json::object();
+    json persona_map = json::object();
+    json users_profile_map = json::object();
+    json session_round_counter = json::object();
+    json group_round_counter = json::object();
+    std::unordered_map<std::string, std::shared_ptr<std::mutex>> request_mutexes;
 
-    // 保存群聊对话轮数到数据文件
-    static bool saveGroupRoundCounter();
-    // 加载群聊对话轮数
-    bool loadGroupRoundCounter();
-
-    // AI 会话历史结构体
-    struct SessionMemCtx{
-        std::string role;
-        std::string content;
-    };
-    // 每个 session 对话历史保存
-    static std::unordered_map<std::string, std::vector<SessionMemCtx>> session_memory;
-    // 会话历史全局锁
-    static std::shared_mutex session_memory_global_lock;
-    // 针对每个 session 的锁表
-    static std::unordered_map<std::string, std::shared_ptr<std::mutex>> session_mutex_map;
-    static std::mutex session_mutex_map_lock;
-    // 获取对话 session id
-    std::string getSessionId(const MessageContext& msgctx);
-    // 获取或者创建 session 对应的锁
-    std::shared_ptr<std::mutex> getSessionMutex(const std::string& session_id);
-    // 获取或者创建 session 对应的对话历史
-    std::vector<SessionMemCtx> getSessionHistory(const std::string& session_id);
-    // 获取某个群聊内所有留存的对话历史
-    std::vector<SessionMemCtx> getGroupSessionHistory(const std::string& group_id);
-    // 更新会话历史
-    bool UpdateSessionMemory(const std::string& session_id, const std::string& user_input, const std::string& ai_reply);
-    // 保存 session memory 到数据文件中
-    static bool saveSessionMemory();
-    // 从数据文件中加载 session memory
-    bool loadSessionMemory();
-
-    // bot 的人格记忆
-    std::string learned_persona;  // 用户影响产生的人格
-    // 不同群聊的人格记忆隔离, 用一个表记录
-    static std::unordered_map<std::string, std::string> persona_map;
-    // 全局锁
-    static std::shared_mutex persona_map_global_lock;
-    // 锁表
-    static std::unordered_map<std::string, std::shared_ptr<std::mutex>> persona_mutex_map;
-    static std::mutex persona_mutex_map_lock;
-    // 获取或者创建群聊人格对应的锁
-    std::shared_ptr<std::mutex> getPersonaMutex(const std::string& group_id);
-    // 获取或者创建对应群聊的人格记忆
-    std::string getBotPersona(const std::string& group_id);
-    // 更新对应群聊的人格记忆
-    bool UpdateBotPersona(const std::string& group_id);
-    // 保存 bot 人格到数据文件中
-    static bool saveBotPersona();
-    // 从数据文件中加载 bot 人格
-    bool loadBotPersona();
-
-    // 给对话过的用户画像
-    struct UserProfile{
-        std::string nickname; // 昵称
-        std::string card; // 群昵称
-        std::string description;   // AI总结的人设
-    };
-    // 不同群聊用户画像的记录
-    static std::unordered_map<std::string, std::unordered_map<std::string, UserProfile>> users_profile_map;
-    // 一个全局锁
-    static std::shared_mutex users_profile_map_global_lock;
-    // 群聊用户画像总的锁表
-    static std::unordered_map<std::string, std::shared_ptr<std::mutex>> users_profile_mutex_map;
-    static std::mutex users_profile_mutex_map_lock;
-    // 获取或创建群聊用户画像锁
-    std::shared_ptr<std::mutex> getUsersProMutex(const std::string& group_id);
-    // 获取或创建群聊用户画像
-    std::unordered_map<std::string, UserProfile> getUsersProfile(const std::string& group_id, const std::string& user_id);
-    // 更新群聊用户画像
-    bool UpdateUserProfile(const std::string& session_id, const std::string& user_id, const std::string& group_id);
-    // 保存用户画像到数据文件中
-    static bool saveUsersProfile();
-    // 从数据文件中加载用户画像
-    bool loadUserProfile();
-
-
-    //与chatAI交互
-    std::string ChatWithAI(const MessageContext& msgctx);
-    // 单纯的与纯净模型交互 (豆包)
-    std::string askAI(const MessageContext& msgctx);
-    // 定时自动保存数据
-    static bool autoSaveData();
-    // 数据脏位
-    static std::atomic<bool> dirty_bit;
-    // 计时
-    static std::thread timer;
-    static std::atomic<bool> running;
+    void loadData();
+    bool saveData();
+    json buildMessages(const MessageContext& msgctx, bool judge, const std::string& purpose);
+    void updateSummaries(const MessageContext& msgctx);
 
 public:
     ChatTaskManager();
+    void recordIncoming(MessageContext& msgctx);
+    void recordOutgoing(const MessageContext& recv, const json& segments, const std::string& message_id);
     bool canHandle(const MessageContext& msgctx) override;
     std::pair<json, std::string> handleTask(const MessageContext& msgctx) override;
     ~ChatTaskManager();
@@ -194,6 +117,7 @@ public:
 class TaskManager : public BaseTaskManager{
 private:
     std::vector<std::unique_ptr<BaseTaskManager>> tsk_managers;
+    ChatTaskManager* chat_manager = nullptr;
     void registerTaskManager(std::unique_ptr<BaseTaskManager> tsk_manager);
 
 public:
@@ -201,4 +125,5 @@ public:
     bool canHandle(const MessageContext& msgctx) override;
     // 总的任务处理函数
     std::pair<json, std::string> handleTask(const MessageContext& msgctx) override;
+    void recordOutgoing(const MessageContext& recv, const SentMessage& sent);
 };

@@ -208,6 +208,12 @@ bool FileManager::writeJsonFile(const std::string& path, const json& data)
         return false;
     }
     ofs << data.dump(4);
+    ofs.flush();
+    if(!ofs)
+    {
+        Logger::error("JSON 文件写入失败", path);
+        return false;
+    }
     return true;
 }
 // 读取 json 数据文件
@@ -232,7 +238,7 @@ bool FileManager::readJsonFile(const std::string& path, json& data)
         data = json::parse(ifs);
     }catch(const json::parse_error& e){
         Logger::warn("JSON 文件为空或格式错误", path);
-        data = json::object();  // 返回空json
+        return false;
     }
     return true;
 }

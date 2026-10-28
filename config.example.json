@@ -9,7 +9,8 @@
         }
     },
     "bot": {
-        "qq": "123456789"
+        "qq": "123456789",
+        "name": "Bot"
     },
     "server": {
         "host": "127.0.0.1",
@@ -35,15 +36,22 @@
         "path": "/v1/chat/completions",
         "system_prompts": "",
         "max_tokens": 3200,
-        "max_rounds": 300
+        "max_rounds": 300,
+        "max_messages": 120,
+        "context_bytes": 64000,
+        "timeout_seconds": 60,
+        "reply_probability": 0.1
     },
-    "ai2": {
-        "key": "xxx-xxxx-xxxx-xxxx-xxxx",
-        "model": "doubao-seed-2-0-lite-260215",
-        "host": "ark.cn-beijing.volces.com",
+    "judge": {
+        "key": "YOUR_JUDGE_API_KEY",
+        "model": "YOUR_JUDGE_MODEL",
+        "host": "https://judge.example.com",
         "port": 443,
-        "path": "/api/v3/chat/completions",
-        "max_tokens": 3200
+        "path": "/v1/chat/completions",
+        "max_tokens": 16,
+        "timeout_seconds": 5,
+        "max_messages": 12,
+        "context_bytes": 12000
     },
     "b23": {
         "app_id": "1109937557",

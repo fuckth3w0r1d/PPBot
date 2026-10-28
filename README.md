@@ -91,13 +91,6 @@
 
 ### 部署
 
-参照 [NapCatQQ 使用文档](https://napneko.github.io/)
+项目运行在服务器 `s0`，通过 systemd 服务 `qqbot` 管理。NapCat 和相关配置已部署，实测时先本地编译，再更新服务器上的 bot 二进制文件。
 
-配置 `http` 客户端和 `http`上报服务端，收发消息格式配置为 `array`
-
-```bash
-cp ./config.json.example ./config.json
-```
-然后进行相关配置
-
-
+连接方式、更新步骤、日志查看及首次配置方法见 [开发与运行指南](docs/guides/development.md)。

@@ -46,14 +46,25 @@ void BotServer::handlePost(const httplib::Request& req, httplib::Response& res)
     }
     // 构造 MessageContext
     MessageContext msgctx;
-    msgctx = MessageManager::getMessageContext(data);
+    try
+    {
+        msgctx = MessageManager::getMessageContext(data);
+    }
+    catch(const std::exception& e)
+    {
+        Logger::warn("消息字段格式错误", e.what());
+        res.status = 400;
+        res.set_content("{}", "application/json");
+        return;
+    }
     Logger::info("获取消息结构成功", msgctx.msg_segments);
     // 调用任务管理器 得到回复
     auto [reply, sendType] = tsk_manager.handleTask(msgctx);
     Logger::info("回复内容: ", reply);
     if (!reply.empty())
     {
-        MessageManager::send_msg(msgctx, reply, sendType);
+        for(const auto& sent : MessageManager::send_msg(msgctx, reply, sendType))
+            tsk_manager.recordOutgoing(msgctx, sent);
     }
     res.set_content("{}", "text/plain");
 }

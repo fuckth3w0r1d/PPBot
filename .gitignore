@@ -11,3 +11,14 @@ log/*
 !log/.gitkeep
 *.o
 *.d
+release/tests/
+.env
+.env.local
+.env.*.local
+.venv/
+__pycache__/
+.pytest_cache/
+.uv-cache/
+.codex/
+.agents/
+AGENTS.md
