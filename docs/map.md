@@ -37,7 +37,7 @@ flowchart LR
 | `ChatTaskManager` | 持有群时间线、群人格、成员画像和计数，组织判定、概率筛选、聊天、总结与定时保存 | [ChatTaskManager.cpp](../src/TaskManagers/ChatTaskManager.cpp) |
 | `JsonTaskManager` | 识别 B 站分享卡片，查询元数据和播放地址，组织视频下载和回复 | [JsonTaskManager.cpp](../src/TaskManagers/JsonTaskManager.cpp) |
 | `FileManager` | 提供进程内按路径加锁的文件读写、缓存下载和清理 | [FileManager.cpp](../src/ToolManagers/FileManager.cpp)、[FileManager.h](../include/ToolManagers/FileManager.h) |
-| `Logger` | 按级别输出控制台日志，追加写日志文件 | [logger.h](../include/logger.h) |
+| `Logger` | 按级别输出控制台和文件日志，统一单行格式、密钥脱敏与 HTTP 错误摘要 | [logger.h](../include/logger.h) |
 
 `BaseTaskManager` 用 `canHandle` 和 `handleTask` 统一分发接口；处理结果由消息段 JSON 和发送方式组成。`Command` 统一命令名、执行结果和发送方式。新增业务需接入相应注册点，单独添加类不会自动成为可触发功能。
 
@@ -45,7 +45,7 @@ HTTP 和 JSON 分别使用仓库内的 [cpp-httplib](../include/httplib.h) 和 [
 
 ## 消息处理契约
 
-`BotServer::handlePost` 先解析请求体。非法 JSON 或消息字段转换失败返回 HTTP 400；没有 `post_type` 或类型不是 `message` 时直接返回 `{}`。消息事件需要 `message_type`、整数或字符串形式的 `user_id`、群聊的 `group_id` 和数组格式 `message`。外部业务接口的响应解析仍可能抛出异常。
+`BotServer::handlePost` 先解析请求体。非法 JSON 或消息字段转换失败返回 HTTP 400；没有 `post_type` 或类型不是 `message` 时直接返回 `{}`。消息事件需要 `message_type`、整数或字符串形式的 `user_id`、群聊的 `group_id` 和数组格式 `message`。业务处理中未被处理器捕获的异常会记录群号、消息 ID 和原因，并返回 HTTP 500。
 
 `MessageContext` 保存群号、发言人、显示名、消息 ID、时间、引用 ID、原始消息段及解析结果。文本段顺序拼接并去除前导 ASCII 空格；整数或字符串形式的 `at.qq` 只有与配置的机器人 QQ 相等才算 @ 本机器人。图片、语音、视频和卡片在模型输入中保留类型及可用文本，不自动识别媒体内容。
 
@@ -85,9 +85,19 @@ HTTP 和 JSON 分别使用仓库内的 [cpp-httplib](../include/httplib.h) 和 [
 
 `JsonTaskManager` 只接受应用 ID 匹配的 B 站卡片，读取分享短链，以 HEAD 请求取得 302 的 `Location`，提取 BV 号后查询信息和播放地址。文件管理器先清理缓存，再下载视频；处理器将封面、统计文本和本地 `file://` 视频路径交给发送层。下载失败时附加文本提示。
 
+天气、图片、餐食、音乐和 B 站处理器分别检查网络、HTTP、接口业务及响应字段错误，返回相应失败提示。HTTP 和业务失败使用 `Logger::httpError` 记录操作、HTTP 状态及服务可提供的错误原因；错误体不是 JSON 时保留有长度限制的文本摘要，不再为打印错误体进行会抛异常的 JSON 解析。歌曲搜索未得到 ID、卡片未得到 BV 号或图片地址为空时，不发起依赖该结果的后续请求或发送无效媒体。
+
 文件下载按保存路径使用进程内互斥锁，已存在的同名文件直接复用；流式写入受单次下载大小限制，网络失败、HTTP 异常或超限时删除失败文件。下载跟随重定向，设置 60 秒读写超时，并关闭服务器证书校验。短链和下载路径使用的客户端为 SSL 客户端，URL 中显式端口未被采用，不能将其视为通用 URL 下载接口。
 
 缓存清理仅在 B 站下载前触发。缓存目录中的普通文件超过数量配置时，按大小从大到小、同大小按修改时间从旧到新删除至配置数量，随后下载可能再增加一个文件。这不是磁盘容量限制或始终成立的文件数量上限，目录中其他普通文件也会参与清理。
+
+## 日志与失败边界
+
+`Logger` 将 JSON 紧凑输出、转义控制字符，并在控制台与文件中使用相同的单行内容，控制台另有级别颜色。HTTP 错误在一条 WARN 中记录操作、状态、原因及服务错误摘要，详细摘要最多 1536 个 UTF-8 字节。判定、聊天、人格总结及画像总结使用不同操作名；判定失败的同一条日志说明进入概率筛选，不重复报告标签无效。正常沉默不产生错误日志。
+
+INFO 记录接收消息的群号、发言人、消息 ID、类型及发送成功摘要；消息和回复正文只在 DEBUG 输出，不为空回复打印 `null`。文件错误包含路径及可用的系统或 JSON 原因，下载失败区分网络、HTTP、超限与磁盘错误。配置打开、JSON 格式或监听等启动失败由入口记录后以状态码 1 退出；日志文件无法写入时，错误仍输出到标准错误。
+
+已配置的聊天、判定、高德密钥及 NapCat 双向令牌值会替换为脱敏标记，但日志摘要仍含群号、用户号等信息，DEBUG 和数据文件仍可能包含明文消息；这不是对所有敏感内容的自动清洗。日志级别及排查示例见 [运行指南](guides/development.md#日志排查)。
 
 ## 部署与数据边界
 

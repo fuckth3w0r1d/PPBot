@@ -4,10 +4,13 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cerrno>
+#include <cstring>
 #include <condition_variable>
 #include <ctime>
 #include <fstream>
 #include <random>
+#include <optional>
 #include <set>
 #include <stdexcept>
 
@@ -40,8 +43,9 @@ json readState(const std::string& filename, const std::string& key)
     if(!std::filesystem::exists(path)) return json::object();
     try
     {
+        errno = 0;
         std::ifstream input(path);
-        if(!input) throw std::runtime_error("无法打开文件");
+        if(!input) throw std::runtime_error(std::string("无法打开文件: ") + (errno ? std::strerror(errno) : "文件流读取失败"));
         auto data = json::parse(input);
         if(data.is_null() || (data.is_object() && data.empty())) return json::object();
         if(!data.is_object() || !data.contains(key) || !data[key].is_object())
@@ -172,7 +176,6 @@ json fitMessages(const std::string& system, json background, std::vector<json> h
     }
     if(messages.dump().size() > budget)
     {
-        Logger::error("模型输入预算不足以容纳固定职责与当前消息身份", budget);
         return json::array();
     }
     return messages;
@@ -189,9 +192,15 @@ std::string endpoint(std::string host, size_t port)
     return host;
 }
 
-std::string requestModel(bool judge, const json& messages)
+std::optional<std::string> requestModel(bool judge, const json& messages, const std::string& purpose)
 {
-    if(messages.empty()) return "";
+    const auto operation = purpose + " model=" + (judge ? JUDGE_MODEL : AI_MODEL);
+    const auto fallback = judge ? "，进入概率筛选" : "";
+    if(messages.empty())
+    {
+        Logger::warn(operation + " 请求未发出 reason=输入预算不足", fallback);
+        return std::nullopt;
+    }
     try
     {
         httplib::Client client(endpoint(judge ? JUDGE_HOST : AI_HOST, judge ? JUDGE_PORT : AI_PORT));
@@ -206,28 +215,40 @@ std::string requestModel(bool judge, const json& messages)
         auto response = client.Post(judge ? JUDGE_POST_PATH : AI_POST_PATH, headers, body.dump(), "application/json");
         if(!response)
         {
-            Logger::warn(judge ? "判定请求失败: " : "聊天请求失败: ", httplib::to_string(response.error()));
-            return "";
+            Logger::warn(operation + " 网络失败 reason=", httplib::to_string(response.error()) + fallback);
+            return std::nullopt;
         }
         if(response->status != 200)
         {
-            Logger::warn(judge ? "判定请求HTTP异常: " : "聊天请求HTTP异常: ", response->status);
-            return "";
+            Logger::httpError(operation, response->status, response->body, std::string("HTTP 响应异常") + fallback);
+            return std::nullopt;
         }
-        const auto result = json::parse(response->body);
-        if(!result.contains("choices") || !result["choices"].is_array() || result["choices"].empty() ||
+        const auto result = json::parse(response->body, nullptr, false);
+        if(!result.is_object() || !result.contains("choices") || !result["choices"].is_array() || result["choices"].empty() ||
            !result["choices"][0].contains("message") || !result["choices"][0]["message"].is_object() ||
            !result["choices"][0]["message"].contains("content") || !result["choices"][0]["message"]["content"].is_string())
         {
-            Logger::warn(judge ? "判定响应格式无效" : "聊天响应格式无效", "");
-            return "";
+            Logger::httpError(operation, response->status, response->body,
+                std::string(result.is_discarded() ? "响应不是合法 JSON" : "响应缺少 choices[0].message.content 字符串") + fallback);
+            return std::nullopt;
         }
-        return trim(result["choices"][0]["message"]["content"].get<std::string>());
+        const auto& choice = result["choices"][0];
+        const auto finish = choice.contains("finish_reason") ? scalar(choice["finish_reason"]) : "";
+        const auto content = trim(choice["message"]["content"].get<std::string>());
+        if(content.empty() || (judge && content != "YES" && content != "NO"))
+        {
+            const auto reason = std::string(content.empty() ? "模型内容为空" : "判定标签无效") +
+                (finish.empty() ? "" : " finish_reason=" + finish) + fallback;
+            Logger::httpError(operation, response->status, content, reason);
+            return std::nullopt;
+        }
+        if(finish == "length") Logger::warn(operation + " http=200 reason=输出被截断 finish_reason=", finish);
+        return content;
     }
     catch(const std::exception& error)
     {
-        Logger::warn(judge ? "判定请求异常: " : "聊天请求异常: ", error.what());
-        return "";
+        Logger::warn(operation + " 请求异常 reason=", std::string(error.what()) + fallback);
+        return std::nullopt;
     }
 }
 
@@ -440,22 +461,22 @@ void ChatTaskManager::updateSummaries(const MessageContext& msgctx)
     }
     if(user_rounds >= threshold)
     {
-        const auto description = requestModel(false, buildMessages(msgctx, false, "profile"));
-        if(!description.empty() && description != "[SILENT]" && description != "YES" && description != "NO")
+        const auto description = requestModel(false, buildMessages(msgctx, false, "profile"), "AI 用户画像总结");
+        if(description && *description != "[SILENT]" && *description != "YES" && *description != "NO")
         {
             std::lock_guard<std::mutex> lock(state_mutex);
-            users_profile_map[msgctx.group_id][msgctx.user_id]["description"] = description;
+            users_profile_map[msgctx.group_id][msgctx.user_id]["description"] = *description;
             session_round_counter[session] = session_round_counter.value(session, size_t(0)) - user_rounds;
             ++state_version;
         }
     }
     if(group_rounds >= threshold)
     {
-        const auto persona = requestModel(false, buildMessages(msgctx, false, "persona"));
-        if(!persona.empty() && persona != "[SILENT]" && persona != "YES" && persona != "NO")
+        const auto persona = requestModel(false, buildMessages(msgctx, false, "persona"), "AI 群人格总结");
+        if(persona && *persona != "[SILENT]" && *persona != "YES" && *persona != "NO")
         {
             std::lock_guard<std::mutex> lock(state_mutex);
-            persona_map[msgctx.group_id] = persona;
+            persona_map[msgctx.group_id] = *persona;
             group_round_counter[msgctx.group_id] = group_round_counter.value(msgctx.group_id, size_t(0)) - group_rounds;
             ++state_version;
         }
@@ -487,18 +508,18 @@ std::pair<json, std::string> ChatTaskManager::handleTask(const MessageContext& m
     std::string purpose = "direct";
     if(!direct)
     {
-        const auto decision = requestModel(true, buildMessages(current, true, "judge"));
-        if(decision == "YES") purpose = "judged";
+        const auto decision = requestModel(true, buildMessages(current, true, "judge"), "AI 判定");
+        if(decision && *decision == "YES") purpose = "judged";
         else
         {
-            if(decision != "NO") Logger::warn("判定结果无效，进入概率筛选", "");
             thread_local std::mt19937 generator(std::random_device{}());
             if(!std::bernoulli_distribution(CHAT_REPLY_PROBABILITY)(generator)) return {};
             purpose = "probability";
         }
     }
     updateSummaries(current);
-    auto reply = requestModel(false, buildMessages(current, false, purpose));
+    const auto generated = requestModel(false, buildMessages(current, false, purpose), "AI 聊天");
+    auto reply = generated.value_or("");
     if(reply.empty() || reply == "[SILENT]" || reply == "YES" || reply == "NO")
     {
         if(!direct) return {};

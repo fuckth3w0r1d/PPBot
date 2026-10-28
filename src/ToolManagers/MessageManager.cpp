@@ -76,28 +76,38 @@ std::vector<SentMessage> MessageManager::send_msg(const MessageContext& recv, co
             path = recv.msg_type == "group" ? "/send_group_msg" : "/send_private_msg";
             body["message"] = segments;
         }
+        const auto operation = "NapCat 消息发送 " +
+            (recv.msg_type == "group" ? "group=" + recv.group_id : "user=" + recv.user_id) + " path=" + path;
         auto response = cli.Post(path, headers, body.dump(), "application/json");
         if(!response)
         {
-            Logger::error("消息发送失败", httplib::to_string(response.error()));
+            Logger::warn(operation + " 网络失败 reason=", httplib::to_string(response.error()));
             return;
         }
         if(response->status != 200)
         {
-            Logger::error("消息发送 HTTP 状态异常", response->status);
+            Logger::httpError(operation, response->status, response->body);
             return;
         }
         const auto result = json::parse(response->body, nullptr, false);
-        if(!result.is_object() || !result.contains("retcode") || result["retcode"] != 0 ||
-           !result.contains("status") || result["status"] != "ok")
+        if(!result.is_object() || !result.contains("retcode") || !result["retcode"].is_number_integer() ||
+           !result.contains("status") || !result["status"].is_string())
         {
-            Logger::error("NapCat 未确认发送成功", response->body);
+            Logger::httpError(operation, response->status, response->body,
+                result.is_discarded() ? "响应不是合法 JSON" : "响应缺少 retcode/status 有效字段");
+            return;
+        }
+        if(result["retcode"] != 0 || result["status"] != "ok")
+        {
+            Logger::httpError(operation, response->status, response->body, "NapCat 未确认发送成功");
             return;
         }
         std::string id;
         if(result.contains("data") && result["data"].is_object() && result["data"].contains("message_id"))
             id = messageId(result["data"]["message_id"]);
         sent.push_back({segments, id});
+        Logger::info("NapCat 发送成功 " + (recv.msg_type == "group" ? "group=" + recv.group_id : "user=" + recv.user_id) +
+            " message_id=" + id + " segments=", segments.size());
     };
     json normal = json::array();
     json videos = json::array();

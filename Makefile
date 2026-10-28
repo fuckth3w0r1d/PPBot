@@ -15,15 +15,21 @@ DEPS := $(OBJS:.o=.d)
 # 目标文件
 TARGET = release/bot
 TEST_TARGET = release/tests/chat_test
+LOG_TEST_TARGET = release/tests/logging_test
 TEST_OBJS = $(filter-out release/main.o,$(OBJS))
 
 # 默认目标
 all: $(TARGET)
 
-test: $(TEST_TARGET)
+test: $(TEST_TARGET) $(LOG_TEST_TARGET)
 	./$(TEST_TARGET)
+	./$(LOG_TEST_TARGET)
 
 $(TEST_TARGET): tests/chat_test.cpp $(TEST_OBJS)
+	@mkdir -p $(dir $@)
+	$(CXX) $(CXXFLAGS) -o $@ $^ $(LDFLAGS)
+
+$(LOG_TEST_TARGET): tests/logging_test.cpp $(TEST_OBJS)
 	@mkdir -p $(dir $@)
 	$(CXX) $(CXXFLAGS) -o $@ $^ $(LDFLAGS)
 

@@ -1,6 +1,8 @@
 #include "ToolManagers/FileManager.h"
 #include "logger.h"
 #include "config.h"
+#include <cerrno>
+#include <cstring>
 
 using json = nlohmann::json;
 
@@ -62,184 +64,226 @@ bool FileManager::isValidFilename(const std::string& filename)
 // 缓存清理函数
 void FileManager::cleanCache()
 {
-    std::filesystem::path cache_dir = CACHE_PATH;
-    if(!std::filesystem::exists(cache_dir))
+    try
     {
-        Logger::warn("清理缓存时发现缓存目录不存在: ", cache_dir);
-        return;
-    }
-    // 收集所有文件
-    std::vector<std::filesystem::path> files;
-    for(const auto& entry : std::filesystem::directory_iterator(cache_dir))
-    {
-        if(entry.is_regular_file())
+        std::filesystem::path cache_dir = CACHE_PATH;
+        if(!std::filesystem::exists(cache_dir))
         {
-            files.push_back(entry.path());
+            Logger::warn("清理缓存时发现缓存目录不存在: ", cache_dir);
+            return;
         }
-    }
-    // 如果文件数量小于等于限制则不清理
-    if(files.size() <= CACHE_FILE_LIMIT)
-    {
-        Logger::info("缓存文件数量可接受, 无需清理, 当前缓存文件数量: ", files.size());
-        return;
-    }
-    // 按最后修改时间排序（最大最旧的在前）
-    std::sort(files.begin(), files.end(), [](const std::filesystem::path& a, const std::filesystem::path& b){
-            auto size_a = std::filesystem::file_size(a);
-            auto size_b = std::filesystem::file_size(b);
-            if (size_a != size_b) return size_a > size_b;  // 大的在前
-            else return std::filesystem::last_write_time(a) < std::filesystem::last_write_time(b); // 旧的在前
-    });
-    // 计算需要删除的数量
-    size_t files_to_delete = files.size() - CACHE_FILE_LIMIT;
-    Logger::info("缓存文件数量超过限制, 将删除最旧的文件, 需清理文件数: ", files_to_delete);
-    // 删除最旧的文件
-    for(size_t i = 0; i < files_to_delete; i++) 
-    {
-        std::error_code ec;
-        std::filesystem::remove(files[i], ec);
-        if(!ec)
+        // 收集所有文件
+        std::vector<std::filesystem::path> files;
+        for(const auto& entry : std::filesystem::directory_iterator(cache_dir))
         {
-            Logger::info("已删除旧缓存: ", files[i].filename().string()); 
-            // 从锁表中移除
-            std::lock_guard<std::mutex> lock(file_mutex_map_lock);
-            file_mutex_map.erase(files[i].generic_string());
-        }
-    }
-}
-// 网络文件下载到指定目录
-std::string FileManager::downloadFile(const std::string& url, const httplib::Headers& headers, const std::string& path ,const std::string& filename)
-{
-    // 检查路径是否存在
-    if(!std::filesystem::exists(path))
-    {
-        Logger::warn("路径不存在", path);
-        return "";
-    }
-    // 检查文件名称
-    if(!isValidFilename(filename))
-    {
-        Logger::warn("文件名不合法: ", filename);
-        return "";
-    }
-    // 使用正则表达式解析url
-    std::regex url_pattern(R"(https?://([^/:]+)(:\d+)?(/.*))");
-    std::smatch match;
-    if(!std::regex_match(url, match, url_pattern))
-    {
-        Logger::error("URL 解析失败", url);
-        return "";
-    }
-    std::string dhost = match[1];
-    std::string dpath = match[3];
-    // 获取下载文件路径
-    std::filesystem::path save_path = std::filesystem::path(path) / filename;
-    std::shared_ptr<std::mutex> file_mutex = getFileMutex(save_path.generic_string());
-    std::lock_guard<std::mutex> file_lock(*file_mutex); // 上锁
-    if(std::filesystem::exists(save_path))
-    {
-        Logger::info("目录中已经存在文件", save_path);
-        return save_path.generic_string();
-    }
-    // 建立SSL客户端
-    httplib::SSLClient cli(dhost);
-    cli.set_follow_location(true);
-    cli.enable_server_certificate_verification(false); // 下载关闭证书
-    cli.set_read_timeout(60);   // 防止卡死
-    cli.set_write_timeout(60);
-    // 创建文件
-    std::ofstream ofs(save_path, std::ios::binary);
-    if (!ofs.is_open())
-    {
-        Logger::error("文件创建失败: ", save_path.generic_string());
-        return "";
-    }
-    // 设置下载缓冲区
-    std::unique_ptr<char[]> buffer(new char[DOWNLOAD_BUFFER_SIZE]);
-    ofs.rdbuf()->pubsetbuf(buffer.get(), DOWNLOAD_BUFFER_SIZE);
-    // 流式下载
-    std::atomic<size_t> downloaded_size{0};
-    bool size_limit_exceeded = false;
-    auto res = cli.Get(dpath, headers, [&](const char* data, size_t data_length){
-            if(downloaded_size.load() + data_length > DOWNLOAD_SIZE_LIMIT)
+            if(entry.is_regular_file())
             {
-                size_limit_exceeded = true;
-                Logger::warn("下载过程中超过大小限制: ", downloaded_size + data_length);
-                return false;  // 返回 false 中断下载
+                files.push_back(entry.path());
             }
-            ofs.write(data, data_length);
-            downloaded_size += data_length; 
-            return true;
+        }
+        // 如果文件数量小于等于限制则不清理
+        if(files.size() <= CACHE_FILE_LIMIT)
+        {
+            return;
+        }
+        // 按最后修改时间排序（最大最旧的在前）
+        std::sort(files.begin(), files.end(), [](const std::filesystem::path& a, const std::filesystem::path& b){
+                auto size_a = std::filesystem::file_size(a);
+                auto size_b = std::filesystem::file_size(b);
+                if (size_a != size_b) return size_a > size_b;  // 大的在前
+                else return std::filesystem::last_write_time(a) < std::filesystem::last_write_time(b); // 旧的在前
         });
-    ofs.close();
-    if (!res)
-    {
-        Logger::error("文件下载失败", httplib::to_string(res.error()));
-        std::filesystem::remove(save_path);
-        return "";
+        // 计算需要删除的数量
+        size_t files_to_delete = files.size() - CACHE_FILE_LIMIT;
+        Logger::info("缓存文件数量超过限制, 将删除最旧的文件, 需清理文件数: ", files_to_delete);
+        // 删除最旧的文件
+        for(size_t i = 0; i < files_to_delete; i++)
+        {
+            std::error_code ec;
+            std::filesystem::remove(files[i], ec);
+            if(!ec)
+            {
+                Logger::debug("缓存文件已删除: ", files[i].filename().string());
+                // 从锁表中移除
+                std::lock_guard<std::mutex> lock(file_mutex_map_lock);
+                file_mutex_map.erase(files[i].generic_string());
+            }
+            else
+            {
+                Logger::warn("缓存文件删除失败: ", files[i].string() + " reason=" + ec.message());
+            }
+        }
     }
-    if(res->status != 200)
+    catch(const std::filesystem::filesystem_error& error)
     {
-        Logger::warn("文件下载异常 HTTP状态码: ", res->status);
-        std::filesystem::remove(save_path);
-        return "";
+        Logger::warn("缓存清理失败: ", error.what());
     }
-    // 检查是否下载超过大小停止
-    if(size_limit_exceeded)
-    {
-        std::filesystem::remove(save_path);
-        return "";
-    }
-    // 返回路径
-    Logger::info("文件已下载到: ", save_path.generic_string());
-    return save_path.generic_string(); // generic_string方法, 使用 / 
 }
+
+// 网络文件下载到指定目录
+std::string FileManager::downloadFile(const std::string& url, const httplib::Headers& headers, const std::string& path, const std::string& filename)
+{
+    try
+    {
+        if(!std::filesystem::exists(path))
+        {
+            Logger::warn("文件下载失败: ", "目录不存在 path=" + path);
+            return "";
+        }
+        if(!isValidFilename(filename)) return "";
+        const std::regex pattern(R"(https?://([^/:]+)(:\d+)?(/.*))");
+        std::smatch match;
+        if(!std::regex_match(url, match, pattern))
+        {
+            Logger::warn("文件下载失败: ", "URL 格式无效");
+            return "";
+        }
+        const auto save_path = std::filesystem::path(path) / filename;
+        const auto file_mutex = getFileMutex(save_path.generic_string());
+        std::lock_guard<std::mutex> file_lock(*file_mutex);
+        if(std::filesystem::exists(save_path))
+        {
+            Logger::debug("复用已下载文件: ", save_path);
+            return save_path.generic_string();
+        }
+        httplib::SSLClient cli(match[1].str());
+        cli.set_follow_location(true);
+        cli.enable_server_certificate_verification(false);
+        cli.set_read_timeout(60);
+        cli.set_write_timeout(60);
+        errno = 0;
+        std::ofstream output(save_path, std::ios::binary);
+        if(!output)
+        {
+            Logger::error("下载文件创建失败: ", save_path.string() + " reason=" + (errno ? std::strerror(errno) : "文件流打开失败"));
+            return "";
+        }
+        std::unique_ptr<char[]> buffer(new char[DOWNLOAD_BUFFER_SIZE]);
+        output.rdbuf()->pubsetbuf(buffer.get(), DOWNLOAD_BUFFER_SIZE);
+        size_t downloaded = 0;
+        bool size_limit_exceeded = false;
+        bool write_failed = false;
+        std::string write_reason;
+        int status = 0;
+        std::string error_body;
+        auto response = cli.Get(match[3].str(), headers,
+            [&](const httplib::Response& result) {
+                status = result.status;
+                return true;
+            },
+            [&](const char* data, size_t length) {
+                if(status != 200)
+                {
+                    if(status >= 300 && status < 400) return true;
+                    error_body.append(data, std::min(length, size_t{2048} - error_body.size()));
+                    return error_body.size() < 2048;
+                }
+                if(length > DOWNLOAD_SIZE_LIMIT - std::min(downloaded, DOWNLOAD_SIZE_LIMIT))
+                {
+                    size_limit_exceeded = true;
+                    return false;
+                }
+                errno = 0;
+                output.write(data, length);
+                if(!output)
+                {
+                    write_failed = true;
+                    write_reason = errno ? std::strerror(errno) : "文件流写入失败";
+                    return false;
+                }
+                downloaded += length;
+                return true;
+            });
+        errno = 0;
+        output.close();
+        if(!output && !write_failed)
+        {
+            write_failed = true;
+            write_reason = errno ? std::strerror(errno) : "文件流关闭失败";
+        }
+        if(size_limit_exceeded)
+            Logger::warn("文件下载失败: ", save_path.string() + " reason=超过大小限制 limit=" + std::to_string(DOWNLOAD_SIZE_LIMIT));
+        else if(write_failed)
+            Logger::error("下载文件写入失败: ", save_path.string() + " reason=" + write_reason);
+        else if(status && status != 200)
+            Logger::httpError("文件下载", status, error_body.empty() && response ? response->body : error_body);
+        else if(!response)
+            Logger::warn("文件下载 网络请求失败: ", httplib::to_string(response.error()));
+        else
+        {
+            Logger::debug("文件下载完成: ", save_path.string() + " bytes=" + std::to_string(downloaded));
+            return save_path.generic_string();
+        }
+        std::error_code cleanup_error;
+        std::filesystem::remove(save_path, cleanup_error);
+        if(cleanup_error) Logger::warn("失败下载文件清理失败: ", save_path.string() + " reason=" + cleanup_error.message());
+        return "";
+    }
+    catch(const std::filesystem::filesystem_error& error)
+    {
+        Logger::warn("文件下载路径错误: ", error.what());
+        return "";
+    }
+}
+
 
 // 写入 json 数据文件
 bool FileManager::writeJsonFile(const std::string& path, const json& data)
 {
-    // 上锁
-    std::shared_ptr<std::mutex> file_mutex = getFileMutex(path);
+    const auto file_mutex = getFileMutex(path);
     std::lock_guard<std::mutex> lock(*file_mutex);
-    std::ofstream ofs(path);
-    if(!ofs.is_open())
-    {
-        Logger::error("JSON 文件写入时打开失败", path);
-        return false;
-    }
-    ofs << data.dump(4);
-    ofs.flush();
-    if(!ofs)
-    {
-        Logger::error("JSON 文件写入失败", path);
-        return false;
-    }
-    return true;
-}
-// 读取 json 数据文件
-bool FileManager::readJsonFile(const std::string& path, json& data)
-{
-    if(!std::filesystem::exists(path))
-    {
-        Logger::warn("JSON 文件不存在", path);
-        return false;
-    }
-    // 上锁
-    std::shared_ptr<std::mutex> file_mutex = getFileMutex(path);
-    std::lock_guard<std::mutex> lock(*file_mutex);
-    std::ifstream ifs(path);
-    if(!ifs.is_open())
-    {
-        Logger::error("JSON 文件读取时打开失败", path);
-        return false;
-    }
+    std::string content;
     try
     {
-        data = json::parse(ifs);
-    }catch(const json::parse_error& e){
-        Logger::warn("JSON 文件为空或格式错误", path);
+        content = data.dump(4);
+    }
+    catch(const json::exception& error)
+    {
+        Logger::error("JSON 文件序列化失败: ", path + " reason=" + error.what());
+        return false;
+    }
+    errno = 0;
+    std::ofstream output(path);
+    if(!output)
+    {
+        Logger::error("JSON 文件打开失败: ", path + " reason=" + (errno ? std::strerror(errno) : "文件流打开失败"));
+        return false;
+    }
+    errno = 0;
+    output << content;
+    output.close();
+    if(!output)
+    {
+        Logger::error("JSON 文件写入失败: ", path + " reason=" + (errno ? std::strerror(errno) : "文件流写入失败"));
         return false;
     }
     return true;
 }
 
+bool FileManager::readJsonFile(const std::string& path, json& data)
+{
+    const auto file_mutex = getFileMutex(path);
+    std::lock_guard<std::mutex> lock(*file_mutex);
+    errno = 0;
+    std::ifstream input(path);
+    if(!input)
+    {
+        Logger::warn("JSON 文件打开失败: ", path + " reason=" + (errno ? std::strerror(errno) : "文件流打开失败"));
+        return false;
+    }
+    try
+    {
+        data = json::parse(input);
+    }
+    catch(const json::exception& error)
+    {
+        Logger::warn("JSON 文件解析失败: ", path + " reason=" + error.what());
+        return false;
+    }
+    if(input.bad())
+    {
+        Logger::warn("JSON 文件读取失败: ", path + " reason=" + (errno ? std::strerror(errno) : "文件流读取失败"));
+        return false;
+    }
+    return true;
+}

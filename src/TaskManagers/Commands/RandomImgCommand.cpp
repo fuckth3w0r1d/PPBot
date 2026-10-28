@@ -8,20 +8,27 @@ std::string RandomImgCommand::getImgUrl()
     auto res = cli.Get(RANDOM_IMG_GET_PATH);
     if(!res)
     {
-        Logger::error("随机图片网络请求失败", httplib::to_string(res.error()));
+        Logger::warn("随机图片 网络请求失败: ", httplib::to_string(res.error()));
         return "";
     }
     if(res->status != 200)
     {
-        Logger::warn("随机图片请求 HTTP状态码: ", res->status);
-        Logger::error("随机图片请求 异常响应体:", json::parse(res->body).dump(4));
+        Logger::httpError("随机图片", res->status, res->body);
         return "";
     }
-    json data = json::parse(res->body);
-    std::string img_url = data["url"].get<std::string>();
-    return img_url;
+    try
+    {
+        const auto data = json::parse(res->body);
+        const auto url = data.at("url").get<std::string>();
+        if(url.empty()) Logger::httpError("随机图片", res->status, res->body, "响应未提供图片地址");
+        return url;
+    }
+    catch(const json::exception& error)
+    {
+        Logger::httpError("随机图片", res->status, res->body, std::string("响应解析失败: ") + error.what());
+        return "";
+    }
 }
-
 
 std::string RandomImgCommand::name()
 {
@@ -35,5 +42,6 @@ std::string RandomImgCommand::sendType()
 
 json RandomImgCommand::execute(const std::string& args)
 {
-    return MessageManager::buildMsg("image", getImgUrl());
-}   
+    const auto url = getImgUrl();
+    return MessageManager::buildMsg(url.empty() ? "text" : "image", url.empty() ? "随机图片获取失败" : url);
+}

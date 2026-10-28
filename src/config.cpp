@@ -3,6 +3,8 @@
 #include <iostream>
 #include <cmath>
 #include <stdexcept>
+#include <cerrno>
+#include <cstring>
 #include "json.hpp"
 
 using json = nlohmann::json;
@@ -83,16 +85,22 @@ std::string MUSIC_GET_ID_PATH;
 // 加载函数
 void load_config(const std::string& path)
 {
-    if(!std::filesystem::exists(path))
-    {
-        std::cerr << "全局配置文件不存在" << std::endl;
-    }
+    errno = 0;
     std::ifstream file(path);
     if (!file.is_open()) 
     {
-        std::cerr << "无法打开配置文件" << std::endl;
+        const std::string reason = errno ? std::strerror(errno) : "文件无法读取";
+        throw std::runtime_error("配置文件打开失败 path=" + path + " reason=" + reason);
     }
-    json data = json::parse(file);
+    json data;
+    try
+    {
+        data = json::parse(file);
+    }
+    catch(const json::parse_error& error)
+    {
+        throw std::runtime_error("配置 JSON 无效 path=" + path + " byte=" + std::to_string(error.byte));
+    }
 
     // log
     LOG_FILE_PATH = data["log"]["file"]["path"].get<std::string>();
