@@ -36,6 +36,7 @@ std::pair<json, std::string> TaskManager::handleTask(const MessageContext& msgct
     auto context = msgctx;
     chat_manager->recordIncoming(context);
     if(context.msg_type != "group" || context.user_id == BOT_QQ) return {};
+    if(context.is_poke) return chat_manager->handleTask(context);
     for(auto& tsk_manager : tsk_managers)
     {
         if(tsk_manager->canHandle(context))
@@ -49,6 +50,6 @@ std::pair<json, std::string> TaskManager::handleTask(const MessageContext& msgct
 
 void TaskManager::recordOutgoing(const MessageContext& recv, const SentMessage& sent)
 {
-    chat_manager->recordOutgoing(recv, sent.segments, sent.message_id);
+    chat_manager->recordOutgoing(recv, sent.segments, sent.message_id, sent.is_poke);
 }
 

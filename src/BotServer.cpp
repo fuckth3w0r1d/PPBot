@@ -40,8 +40,7 @@ void BotServer::handlePost(const httplib::Request& req, httplib::Response& res)
         res.set_content("{}", "application/json");
         return;
     }
-    //只处理消息事件, 其余事件todo
-    if (!data.contains("post_type") || data["post_type"] != "message")
+    if ((!data.contains("post_type") || data["post_type"] != "message") && !MessageManager::isGroupPoke(data))
     {
         res.set_content("{}", "text/plain");
         return;
@@ -60,7 +59,7 @@ void BotServer::handlePost(const httplib::Request& req, httplib::Response& res)
         return;
     }
     Logger::info("收到消息: ", json{{"group", msgctx.group_id}, {"user", msgctx.user_id},
-                                  {"message", msgctx.message_id}, {"type", msgctx.msg_type}});
+                                  {"message", msgctx.message_id}, {"type", msgctx.is_poke ? "poke" : msgctx.msg_type}});
     Logger::debug("消息内容: ", msgctx.msg_segments);
     try
     {

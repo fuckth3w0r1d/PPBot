@@ -34,11 +34,14 @@ struct MessageContext{
     int64_t timestamp = 0;
     uint64_t timeline_sequence = 0;
     bool reply_to_bot = false;
+    bool is_poke = false;
+    std::string target_id;
 };
 
 struct SentMessage{
     json segments;
     std::string message_id;
+    bool is_poke = false;
 };
 
 // 消息管理器
@@ -49,5 +52,6 @@ private:
 public:
     static std::vector<SentMessage> send_msg(const MessageContext& recv, const json& reply, const std::string& sendType);
     static MessageContext getMessageContext(const json& data);
+    static bool isGroupPoke(const json& data);
     static json buildMsg(const std::string& msg_type, const std::string& msg_data);
 };

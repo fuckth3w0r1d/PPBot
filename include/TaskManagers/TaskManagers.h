@@ -104,7 +104,7 @@ private:
 public:
     ChatTaskManager();
     void recordIncoming(MessageContext& msgctx);
-    void recordOutgoing(const MessageContext& recv, const json& segments, const std::string& message_id);
+    void recordOutgoing(const MessageContext& recv, const json& segments, const std::string& message_id, bool is_poke = false);
     bool canHandle(const MessageContext& msgctx) override;
     std::pair<json, std::string> handleTask(const MessageContext& msgctx) override;
     ~ChatTaskManager();

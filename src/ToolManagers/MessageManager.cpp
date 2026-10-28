@@ -2,6 +2,8 @@
 #include "logger.h"
 #include "config.h"
 #include <ctime>
+#include <charconv>
+#include <optional>
 #include <stdexcept>
 
 namespace {
@@ -10,6 +12,24 @@ std::string messageId(const json& value)
     if(value.is_string()) return value.get<std::string>();
     if(value.is_number_integer()) return value.dump();
     return {};
+}
+
+std::optional<uint64_t> positiveId(const json& value)
+{
+    const auto text = messageId(value);
+    uint64_t id = 0;
+    const auto result = std::from_chars(text.data(), text.data() + text.size(), id);
+    if(result.ec != std::errc() || result.ptr != text.data() + text.size() || !id) return std::nullopt;
+    return id;
+}
+
+std::string validMessageId(const json& value)
+{
+    const auto text = messageId(value);
+    int64_t id = 0;
+    const auto result = std::from_chars(text.data(), text.data() + text.size(), id);
+    if(result.ec != std::errc() || result.ptr != text.data() + text.size() || !id) return {};
+    return text;
 }
 }
 
@@ -56,12 +76,17 @@ std::vector<SentMessage> MessageManager::send_msg(const MessageContext& recv, co
     cli.set_write_timeout(30);
     httplib::Headers headers = {{"Authorization", "Bearer " + SERVER_TOKEN}};
     std::vector<SentMessage> sent;
-    auto send = [&](const json& segments, bool forward) {
+    auto send = [&](const json& segments, bool forward, bool poke = false) {
         json body;
         body[recv.msg_type == "group" ? "group_id" : "user_id"] =
             recv.msg_type == "group" ? recv.group_id : recv.user_id;
         std::string path;
-        if(forward)
+        if(poke)
+        {
+            path = "/group_poke";
+            body = {{"group_id", *positiveId(recv.group_id)}, {"user_id", *positiveId(recv.user_id)}};
+        }
+        else if(forward)
         {
             path = "/send_forward_msg";
             body["messages"] = json::array();
@@ -103,34 +128,60 @@ std::vector<SentMessage> MessageManager::send_msg(const MessageContext& recv, co
             return;
         }
         std::string id;
-        if(result.contains("data") && result["data"].is_object() && result["data"].contains("message_id"))
-            id = messageId(result["data"]["message_id"]);
-        sent.push_back({segments, id});
+        if(!poke && result.contains("data") && result["data"].is_object() && result["data"].contains("message_id"))
+            id = validMessageId(result["data"]["message_id"]);
+        sent.push_back({segments, id, poke});
         Logger::info("NapCat 发送成功 " + (recv.msg_type == "group" ? "group=" + recv.group_id : "user=" + recv.user_id) +
             " message_id=" + id + " segments=", segments.size());
     };
     json normal = json::array();
     json videos = json::array();
+    bool poke = false;
     for(const auto& seg : reply)
     {
-        if(seg.is_object() && seg.value("type", "") == "video") videos.push_back(seg);
+        if(seg.is_object() && seg.value("type", "") == "poke") poke = true;
+        else if(seg.is_object() && seg.value("type", "") == "video") videos.push_back(seg);
         else normal.push_back(seg);
     }
     if(!normal.empty()) send(normal, sendType != "direct");
     for(const auto& video : videos) send(json::array({video}), sendType != "direct");
+    if(poke && recv.is_poke && recv.msg_type == "group" && recv.target_id == BOT_QQ && recv.user_id != BOT_QQ &&
+       positiveId(recv.group_id) && positiveId(recv.user_id)) send(json::array(), false, true);
     return sent;
+}
+
+bool MessageManager::isGroupPoke(const json& data)
+{
+    return data.is_object() && data.contains("post_type") && data["post_type"] == "notice" &&
+        data.contains("notice_type") && data["notice_type"] == "notify" &&
+        data.contains("sub_type") && data["sub_type"] == "poke" &&
+        data.contains("group_id") && positiveId(data["group_id"]) &&
+        data.contains("user_id") && positiveId(data["user_id"]) && messageId(data["user_id"]) != BOT_QQ &&
+        data.contains("target_id") && messageId(data["target_id"]) == BOT_QQ;
 }
 
 MessageContext MessageManager::getMessageContext(const json& data)
 {
     MessageContext msgctx;
+    if(data.contains("post_type") && data["post_type"] == "notice")
+    {
+        if(!isGroupPoke(data)) throw std::invalid_argument("拍一拍事件字段格式错误");
+        msgctx.msg_type = "group";
+        msgctx.group_id = messageId(data["group_id"]);
+        msgctx.user_id = messageId(data["user_id"]);
+        msgctx.target_id = BOT_QQ;
+        msgctx.is_poke = true;
+        msgctx.msg_segments = json::array();
+        msgctx.timestamp = data.value("time", static_cast<int64_t>(std::time(nullptr)));
+        return msgctx;
+    }
     msgctx.msg_type = data.at("message_type").get<std::string>();
     msgctx.user_id = messageId(data.at("user_id"));
     if(msgctx.msg_type == "group") msgctx.group_id = messageId(data.at("group_id"));
     msgctx.msg_segments = data.at("message");
     if(msgctx.user_id.empty() || (msgctx.msg_type == "group" && msgctx.group_id.empty()) ||
        !msgctx.msg_segments.is_array()) throw std::invalid_argument("消息字段格式错误");
-    if(data.contains("message_id")) msgctx.message_id = messageId(data["message_id"]);
+    if(data.contains("message_id")) msgctx.message_id = validMessageId(data["message_id"]);
     msgctx.timestamp = data.value("time", static_cast<int64_t>(std::time(nullptr)));
     if(data.contains("sender") && data["sender"].is_object())
     {
@@ -141,7 +192,7 @@ MessageContext MessageManager::getMessageContext(const json& data)
     {
         if(seg.is_object() && seg.value("type", "") == "reply" &&
            seg.contains("data") && seg["data"].is_object() && seg["data"].contains("id"))
-            msgctx.reply_to = messageId(seg["data"]["id"]);
+            msgctx.reply_to = validMessageId(seg["data"]["id"]);
     }
     msgctx.pmsgsegs = parseMsgSegments(msgctx.msg_segments);
     return msgctx;
@@ -150,6 +201,7 @@ MessageContext MessageManager::getMessageContext(const json& data)
 json MessageManager::buildMsg(const std::string& msg_type, const std::string& msg_data)
 {
     if(msg_type == "at") return {{"type", msg_type}, {"data", {{"qq", msg_data}}}};
+    if(msg_type == "reply") return {{"type", msg_type}, {"data", {{"id", msg_data}}}};
     if(msg_type == "text") return {{"type", msg_type}, {"data", {{"text", msg_data}}}};
     if(msg_type == "image" || msg_type == "video" || msg_type == "record")
         return {{"type", msg_type}, {"data", {{"file", msg_data}}}};

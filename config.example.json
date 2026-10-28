@@ -29,9 +29,9 @@
         "path": "/v3/weather/weatherInfo"
     },
     "ai": {
-        "key": "sk-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
-        "model": "deepseek-chat",
-        "host": "api.deepseek.com",
+        "key": "YOUR_CHAT_API_KEY",
+        "model": "YOUR_MULTIMODAL_CHAT_MODEL",
+        "host": "https://chat.example.com",
         "port": 443,
         "path": "/v1/chat/completions",
         "system_prompts": "",
