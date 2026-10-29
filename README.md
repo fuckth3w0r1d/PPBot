@@ -1,96 +1,47 @@
 ## PPBot
-### 基于 NapCatQQ 搭建的简易 qq bot
-使用 Cpp 编写的 qq 机器人, 实现了一些文本指令响应、`Json`卡片分享解析和AI对话功能。
+
+### 基于 NapCatQQ 搭建的简易 QQ Bot
+
+PPBot 是使用 C++17 编写的 QQ 群聊机器人，通过 NapCatQQ 接收群事件并发送消息，提供文本命令、B 站分享卡片处理、图文 LLM 对话和拍一拍回应。
+
+项目文档从[文档导航](docs/README.md)进入；系统结构见[架构说明](docs/map.md)，开发需求见[需求规格](docs/spec.md)。
 
 ### 环境说明
-- Ubuntu 24.04  
 
-- NapCat v4.17.29
+构建需要 C++17 编译器、C 编译器、GNU Make、OpenSSL 和启用 FTS5 的 SQLite 开发库。运行需要 NapCatQQ，以及配置中指定的聊天、判定和 embedding 服务。
 
-- OpenSSL
+在项目根目录执行：
 
-  ```shell
-  $ openssl version
-  OpenSSL 3.0.13 30 Jan 2024 (Library: OpenSSL 3.0.13 30 Jan 2024)
-  ```
+```sh
+make
+make test
+```
 
-- 编译器
-
-  ```shell
-  $ g++ --version
-  g++ (Ubuntu 13.3.0-6ubuntu2~24.04) 13.3.0
-  Copyright (C) 2023 Free Software Foundation, Inc.
-  This is free software; see the source for copying conditions.  There is NO
-  warranty; not even for MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
-  ```
-
-- 编译命令
-
-  ```shell
-  make
-  ```
+程序产物为 `release/bot`。启动前需准备配置与运行目录，具体依赖、配置加载路径和接入步骤见[开发与运行指南](docs/guides/development.md)。
 
 ### 项目结构
 
-```
-├── Makefile  
-├── README.md
-├── cache       # 运行时的缓存数据
-├── config.example.json # 配置文件示例
-├── data        # 运行产生的数据文件
-├── include     # 所有头文件, 包括第三方库
-│   ├── BotServer.h
-│   ├── TaskManagers
-│   │   ├── Commands.h
-│   │   └── TaskManagers.h
-│   ├── ToolManagers
-│   │   ├── FileManager.h
-│   │   └── MessageManager.h
-│   ├── config.h
-│   ├── httplib.h
-│   ├── json.hpp
-│   └── logger.h
-├── log         # 日志文件目录
-├── release     # 编译产物
-│   ├── TaskManagers
-│   │   └── Commands
-│   ├── ToolManagers
-│   └── bot
-└── src         # 所有源码实现
-    ├── BotServer.cpp
-    ├── TaskManagers
-    │   ├── ChatTaskManager.cpp
-    │   ├── CmdTaskManager.cpp
-    │   ├── Commands
-    │   │   ├── HelpCommand.cpp
-    │   │   ├── MealCommand.cpp
-    │   │   ├── MusicCommand.cpp
-    │   │   ├── RandomImgCommand.cpp
-    │   │   ├── RandomImgCommand2.cpp
-    │   │   ├── TimeCommand.cpp
-    │   │   └── WeatherCommand.cpp
-    │   ├── JsonTaskManager.cpp
-    │   └── TaskManager.cpp
-    ├── ToolManagers
-    │   ├── FileManager.cpp
-    │   └── MessageManager.cpp
-    ├── config.cpp
-    └── main.cpp
-```
+| 位置 | 内容 |
+| --- | --- |
+| `src/` | 程序实现 |
+| `include/` | 项目及第三方头文件 |
+| `tests/` | 本地模拟与存储测试 |
+| `docs/` | 需求、架构和操作指南 |
+| `config.example.json` | 配置示例 |
+| `release/` | 编译产物 |
+| `data/`、`cache/`、`log/` | 运行数据、缓存和日志的预留目录，实际位置由配置指定 |
 
 ### 主要特性
 
-- 使用 cpp-httplib 库，OneBot HTTP Server
-- 总体模块化：模块低耦合，便于扩展和维护
-- 消息处理模块：通过解析器将原始JSON解构为统一的 msgctx，支持链式调用
-- 指令功能模块：实现 Command 类封装，便于派生实现更多指令，通过映射表分配到设定的指令
-- 文件管理模块：运用 RAII 管理锁与缓存，线程安全。
-- 分享JSON消息解析模块：针对特定卡片类型，提取元数据并触发下载
-- AI对话模块：prompts 维护上下文，session 机制，用户画像，AI可变人格，定时保存json文件进行历史留存避免清空记忆
-- 任务分发模块: 实现 BaseTaskManager 类封装，便于派生实现更多业务功能，遍历所有 TaskManager 自动分配任务
+- 文本命令：帮助、时间、天气、餐食、图片和点歌。
+- B 站分享卡片：解析信息、发送封面，并在下载成功后发送视频。
+- 群聊对话：静态提示词、按群隔离的近期上下文、独立回复判定和概率插话。
+- 图文输入：仅附带当前消息及直接引用消息的图片，按 token 预算裁剪完整历史消息。
+- 历史归档：SQLite 滚动保存 30 天群消息，通过中文关键词与语义混合检索补充相关历史。
+- 拍一拍回应：结合群语境选择文字、回拍或两者，只有发送成功的结果进入历史。
 
 ### 部署
 
-项目运行在服务器 `s0`，通过 systemd 服务 `qqbot` 管理。NapCat 和相关配置已部署，实测时先本地编译，再更新服务器上的 bot 二进制文件。
+项目部署在服务器 `s0`，由 systemd 服务 `qqbot` 管理。更新时在本地构建并上传二进制，检查目标机器的动态库兼容性后再替换和重启。
 
-连接方式、更新步骤、日志查看及首次配置方法见 [开发与运行指南](docs/guides/development.md)。
+首次配置、更新步骤、数据迁移、正常停机和日志排查见[开发与运行指南](docs/guides/development.md)。

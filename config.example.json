@@ -28,7 +28,7 @@
         "port": 443,
         "path": "/v3/weather/weatherInfo"
     },
-    "ai": {
+    "chat_llm": {
         "key": "YOUR_CHAT_API_KEY",
         "model": "YOUR_MULTIMODAL_CHAT_MODEL",
         "host": "https://chat.example.com",
@@ -36,9 +36,9 @@
         "path": "/v1/chat/completions",
         "system_prompts": "",
         "max_tokens": 3200,
-        "max_rounds": 300,
         "max_messages": 120,
-        "context_bytes": 64000,
+        "context_tokens": 32000,
+        "retrieval_context_tokens": 2048,
         "timeout_seconds": 60,
         "reply_probability": 0.1
     },
@@ -51,7 +51,15 @@
         "max_tokens": 16,
         "timeout_seconds": 5,
         "max_messages": 12,
-        "context_bytes": 12000
+        "context_tokens": 4000
+    },
+    "embedding": {
+        "key": "YOUR_EMBEDDING_API_KEY",
+        "model": "YOUR_EMBEDDING_MODEL",
+        "host": "https://embedding.example.com",
+        "port": 443,
+        "path": "/v1/embeddings",
+        "timeout_seconds": 3
     },
     "b23": {
         "app_id": "1109937557",

@@ -1,5 +1,6 @@
 #include "BotServer.h"
 #include "config.h"
+#include "sqlite3.h"
 
 #include <atomic>
 #include <chrono>
@@ -11,6 +12,8 @@
 #include <mutex>
 #include <stdexcept>
 #include <thread>
+#include <ctime>
+#include <random>
 
 using namespace std::chrono_literals;
 
@@ -42,6 +45,56 @@ static void writeJson(const std::filesystem::path& path, const json& value)
     std::ofstream output(path);
     output << value.dump();
     require(output.good(), "无法准备测试数据: " + path.string());
+}
+
+static json readTimeline(const std::filesystem::path& directory)
+{
+    sqlite3* database = nullptr;
+    const auto path = directory / "messages.sqlite3";
+    const auto opened = sqlite3_open_v2(path.c_str(), &database, SQLITE_OPEN_READONLY, nullptr);
+    if (opened != SQLITE_OK)
+    {
+        if (database) sqlite3_close(database);
+        return json::object();
+    }
+    sqlite3_stmt* statement = nullptr;
+    const auto prepared = sqlite3_prepare_v2(database, "SELECT record FROM messages ORDER BY sequence", -1, &statement, nullptr);
+    json groups = json::object();
+    if (prepared == SQLITE_OK)
+        while (sqlite3_step(statement) == SQLITE_ROW)
+        {
+            const auto record = json::parse(reinterpret_cast<const char*>(sqlite3_column_text(statement, 0)));
+            auto& history = groups[record.at("group_id").get<std::string>()];
+            if (history.is_null()) history = json::array();
+            history.push_back(record);
+        }
+    sqlite3_finalize(statement);
+    sqlite3_close(database);
+    return groups;
+}
+
+static size_t estimatedTokens(const json& messages)
+{
+    const auto textTokens = [](const std::string& value) {
+        size_t ascii = 0;
+        size_t non_ascii = 0;
+        for (const auto byte : value)
+            if (static_cast<unsigned char>(byte) < 0x80) ++ascii;
+            else if ((static_cast<unsigned char>(byte) & 0xc0) != 0x80) ++non_ascii;
+        return (ascii + 3) / 4 + 2 * non_ascii;
+    };
+    size_t total = 0;
+    for (const auto& message : messages)
+    {
+        total += 8;
+        const auto& content = message.at("content");
+        if (content.is_string()) total += textTokens(content.get<std::string>());
+        else
+            for (const auto& part : content)
+                if (part.at("type") == "image_url") total += 4096;
+                else if (part.at("type") == "text") total += textTokens(part.at("text").get<std::string>());
+    }
+    return total;
 }
 
 template<class Predicate>
@@ -84,11 +137,6 @@ class Services {
     std::vector<json> poke_requests;
     std::string judge_result = "NO";
     std::string chat_result = "CHAT_DEFAULT";
-    std::string persona_result = "UPDATED_PERSONA_MARKER";
-    std::string profile_result = "UPDATED_PROFILE_MARKER";
-    bool summary_invalid = false;
-    bool summary_empty = false;
-    bool summary_incomplete = false;
     bool judge_invalid = false;
     bool chat_invalid = false;
     bool send_failure = false;
@@ -114,6 +162,19 @@ public:
 
     Services()
     {
+        server.Post("/embeddings", [](const httplib::Request& request, httplib::Response& response) {
+            const auto body = json::parse(request.body);
+            json results = json::array();
+            const auto inputs = body.at("input").is_array() ? body.at("input") : json::array({body.at("input")});
+            for (size_t i = 0; i < inputs.size(); ++i)
+            {
+                std::mt19937 generator(static_cast<unsigned>(std::hash<std::string>{}(inputs[i].get<std::string>())));
+                json vector = json::array();
+                for (size_t j = 0; j < 64; ++j) vector.push_back((generator() & 1) ? 0.125 : -0.125);
+                results.push_back({{"index", i}, {"embedding", vector}});
+            }
+            response.set_content(json{{"data", results}}.dump(), "application/json");
+        });
         server.Post("/judge", [this](const httplib::Request& request, httplib::Response& response) {
             std::string result;
             bool invalid;
@@ -145,24 +206,15 @@ public:
                 condition.wait(lock, [this] { return release_chat; });
                 block_chat = false;
             }
-            const std::string instructions = chat_requests.back().at("messages").at(0).at("content").get<std::string>();
-            const bool persona = instructions.find("群人格总结器") != std::string::npos;
-            const bool profile = instructions.find("用户画像总结器") != std::string::npos;
-            const std::string result = (persona || profile) && summary_empty ? "" : persona ? persona_result : profile ? profile_result : chat_result;
-            const bool invalid = persona || profile ? summary_invalid : chat_invalid;
-            const int status = persona || profile ? 200 : chat_status;
+            const std::string result = chat_result;
+            const bool invalid = chat_invalid;
+            const int status = chat_status;
             std::string data = invalid ? "data: not-json\r\n\r\ndata: [DONE]\r\n\r\n" : streamReply(result);
-            const bool summary = persona || profile;
-            if (!summary && !stream_override.empty()) data = stream_override;
-            if (summary && summary_incomplete)
-            {
-                data = streamReply("INCOMPLETE_" + result);
-                data.erase(data.find("data: [DONE]"));
-            }
-            const bool disconnect = !summary && disconnect_stream;
-            const int delay = summary ? 0 : stream_delay_ms;
-            const bool pause = !summary && block_stream;
-            const size_t fragment = summary ? 0 : fragment_size;
+            if (!stream_override.empty()) data = stream_override;
+            const bool disconnect = disconnect_stream;
+            const int delay = stream_delay_ms;
+            const bool pause = block_stream;
+            const size_t fragment = fragment_size;
             const int interval = fragment_delay_ms;
             lock.unlock();
             response.status = status;
@@ -281,14 +333,6 @@ public:
         send_failure = fail;
     }
 
-    void summariesInvalid(bool invalid, bool empty = false, bool incomplete = false)
-    {
-        std::lock_guard<std::mutex> lock(mutex);
-        summary_invalid = invalid;
-        summary_empty = empty;
-        summary_incomplete = incomplete;
-    }
-
     void pokeResponse(int status = 200, const json& result = {{"status", "ok"}, {"retcode", 0}, {"data", nullptr}})
     {
         std::lock_guard<std::mutex> lock(mutex);
@@ -376,13 +420,13 @@ static void replyForm(const json& sent, const std::string& id = "")
 static json poke(int group = 901, int user = 77, int target = 42)
 {
     return {{"post_type", "notice"}, {"notice_type", "notify"}, {"sub_type", "poke"},
-        {"group_id", group}, {"user_id", user}, {"target_id", target}, {"time", 1700000001}};
+        {"group_id", group}, {"user_id", user}, {"target_id", target}, {"time", static_cast<int64_t>(std::time(nullptr))}};
 }
 
 static json event(const json& segments, int group = 123, int user = 77)
 {
     static std::atomic<int> id{100};
-    return {{"post_type", "message"}, {"message_type", "group"}, {"group_id", group}, {"user_id", user}, {"message_id", ++id}, {"time", 1700000000}, {"sender", {{"user_id", user}, {"nickname", "member_" + std::to_string(user)}, {"card", "card_" + std::to_string(user)}}}, {"message", segments}};
+    return {{"post_type", "message"}, {"message_type", "group"}, {"group_id", group}, {"user_id", user}, {"message_id", ++id}, {"time", static_cast<int64_t>(std::time(nullptr))}, {"sender", {{"user_id", user}, {"nickname", "member_" + std::to_string(user)}, {"card", "card_" + std::to_string(user)}}}, {"message", segments}};
 }
 
 static void deliver(BotServer& bot, const json& value)
@@ -410,18 +454,17 @@ static void configure(const Services& services, const std::filesystem::path& roo
     CACHE_PATH = (root / "cache").string();
     DATA_PATH = (root / "data").string();
     SAVE_FREQUENCY = 1;
-    AI_HOST = "http://127.0.0.1:" + std::to_string(services.port);
-    AI_PORT = services.port;
-    AI_POST_PATH = "/chat";
-    AI_MODEL = "chat-test";
-    AI_KEY = "chat-key";
-    AI_SYS_PROMPTS = "SYSTEM_PERSONA_MARKER";
-    AI_MAX_TOKENS = 64;
-    AI_MAX_CHAT_ROUNDS = 100000;
-    AI_MAX_MESSAGES = 120;
-    AI_CONTEXT_BYTES = 64000;
-    AI_TIMEOUT_SECONDS = 5;
-    JUDGE_HOST = AI_HOST;
+    CHAT_LLM_HOST = "http://127.0.0.1:" + std::to_string(services.port);
+    CHAT_LLM_PORT = services.port;
+    CHAT_LLM_POST_PATH = "/chat";
+    CHAT_LLM_MODEL = "chat-test";
+    CHAT_LLM_KEY = "chat-key";
+    CHAT_LLM_SYS_PROMPTS = "SYSTEM_PERSONA_MARKER";
+    CHAT_LLM_MAX_TOKENS = 64;
+    CHAT_LLM_MAX_MESSAGES = 120;
+    CHAT_LLM_CONTEXT_TOKENS = 32000;
+    CHAT_LLM_TIMEOUT_SECONDS = 5;
+    JUDGE_HOST = CHAT_LLM_HOST;
     JUDGE_PORT = services.port;
     JUDGE_POST_PATH = "/judge";
     JUDGE_MODEL = "judge-test";
@@ -429,8 +472,15 @@ static void configure(const Services& services, const std::filesystem::path& roo
     JUDGE_MAX_TOKENS = 16;
     JUDGE_TIMEOUT_SECONDS = 1;
     JUDGE_MAX_MESSAGES = 12;
-    JUDGE_CONTEXT_BYTES = 12000;
-    CHAT_REPLY_PROBABILITY = 0;
+    JUDGE_CONTEXT_TOKENS = 4000;
+    EMBEDDING_HOST = CHAT_LLM_HOST;
+    EMBEDDING_PORT = services.port;
+    EMBEDDING_POST_PATH = "/embeddings";
+    EMBEDDING_MODEL = "embedding-test";
+    EMBEDDING_KEY = "embedding-key";
+    EMBEDDING_TIMEOUT_SECONDS = 1;
+    CHAT_LLM_RETRIEVAL_CONTEXT_TOKENS = 2048;
+    CHAT_LLM_REPLY_PROBABILITY = 0;
     B23_APPID = "test-b23";
     B23_HOST = "127.0.0.1";
     B23_PORT = 1;
@@ -441,14 +491,53 @@ static void configure(const Services& services, const std::filesystem::path& roo
 static void configuration(const std::filesystem::path& root)
 {
     json settings = readJson("config.example.json");
+    require(!settings.contains("ai"), "示例配置仍使用旧聊天配置块");
     require(!settings.contains("ai2"), "示例配置仍要求第二聊天模型");
-    require(settings.at("ai").at("reply_probability") == 0.1, "示例插话概率未设为10%");
-    settings["ai"]["reply_probability"] = 0.37;
+    require(settings.at("chat_llm").at("reply_probability") == 0.1, "示例插话概率未设为10%");
+    settings["chat_llm"]["reply_probability"] = 0.37;
     const auto path = root / "config.json";
     writeJson(path, settings);
     load_config(path.string());
-    require(CHAT_REPLY_PROBABILITY == 0.37, "插话概率配置未生效");
-    settings["ai"]["reply_probability"] = 1.01;
+    require(CHAT_LLM_REPLY_PROBABILITY == 0.37, "插话概率配置未生效");
+    auto legacy = settings;
+    legacy["ai"] = legacy.at("chat_llm");
+    legacy.erase("chat_llm");
+    writeJson(path, legacy);
+    bool legacy_rejected = false;
+    try { load_config(path.string()); } catch(const json::out_of_range& error) {
+        legacy_rejected = std::string(error.what()).find("chat_llm") != std::string::npos;
+    }
+    require(legacy_rejected, "旧ai配置块没有要求改为chat_llm");
+    require(!settings.at("chat_llm").contains("max_rounds") && !settings.at("chat_llm").contains("context_bytes") &&
+        !settings.at("judge").contains("context_bytes"), "示例仍含已停用参数");
+    require(CHAT_LLM_CONTEXT_TOKENS == settings.at("chat_llm").at("context_tokens") &&
+        JUDGE_CONTEXT_TOKENS == settings.at("judge").at("context_tokens"), "token预算加载失败");
+    settings["chat_llm"]["max_rounds"] = "ignored-legacy-value";
+    settings["chat_llm"]["context_bytes"] = "ignored-legacy-value";
+    settings["judge"]["context_bytes"] = "ignored-legacy-value";
+    settings["embedding"]["model"] = "embedding-config-test";
+    settings["embedding"]["path"] = "/embedding-config-test";
+    writeJson(path, settings);
+    load_config(path.string());
+    require(EMBEDDING_MODEL == "embedding-config-test" && EMBEDDING_POST_PATH == "/embedding-config-test", "embedding独立配置未生效");
+    const auto valid = settings;
+    for (const auto& invalid : {json(-1), json(0), json(1.5)})
+    {
+        settings = valid;
+        settings["chat_llm"]["context_tokens"] = invalid;
+        writeJson(path, settings);
+        bool rejected = false;
+        try { load_config(path.string()); } catch (const std::exception&) { rejected = true; }
+        require(rejected, "无效token预算未拒绝");
+    }
+    settings = valid;
+    settings["chat_llm"]["max_tokens"] = settings["chat_llm"]["context_tokens"];
+    writeJson(path, settings);
+    bool no_input = false;
+    try { load_config(path.string()); } catch (const std::exception&) { no_input = true; }
+    require(no_input, "没有输入空间的总预算未拒绝");
+    settings = valid;
+    settings["chat_llm"]["reply_probability"] = 1.01;
     writeJson(path, settings);
     bool rejected = false;
     try { load_config(path.string()); } catch (const std::invalid_argument&) { rejected = true; }
@@ -463,7 +552,7 @@ static void routingAndHistory(Services& services)
     size_t sends = services.sends().size();
     deliver(bot, event(json::array({at("42"), text(" 时间")})));
     require(services.sends().size() == sends + 1, "@时间未由命令回复");
-    require(services.judges().size() == judges && services.chats().size() == chats, "命令被AI抢占");
+    require(services.judges().size() == judges && services.chats().size() == chats, "命令被聊天模型抢占");
 
     const json card = {{"meta", {{"detail_1", {{"appid", B23_APPID}, {"qqdocurl", "invalid-short-link"}}}}}};
     auto card_event = event(json::array({at("42"), text("CARD_PRIORITY_MARKER"), {{"type", "json"}, {"data", {{"data", card.dump()}}}}}));
@@ -519,7 +608,7 @@ static void routingAndHistory(Services& services)
     require(occurrences(shared, "MEMBER_A_SHARED_MARKER") == 1 && occurrences(shared, "MEMBER_B_CURRENT_MARKER") == 1, "群内共享上下文缺失或重复");
     require(shared.find("OTHER_GROUP_SECRET_MARKER") == std::string::npos, "群1234历史混入群123");
     require(shared.find("GROUP_1234_PERSONA_SECRET") == std::string::npos && shared.find("GROUP_1234_PROFILE_SECRET") == std::string::npos, "跨群人格或画像泄漏");
-    require(shared.find("GROUP_123_PERSONA_MARKER") != std::string::npos && shared.find("GROUP_123_PROFILE_MARKER") != std::string::npos, "已有群人格或画像未复用");
+    require(shared.find("GROUP_123_PERSONA_MARKER") == std::string::npos && shared.find("GROUP_123_PROFILE_MARKER") == std::string::npos, "已停用群人格或画像仍被注入");
     require(shared.find("OTHER_CARD_CONTEXT_MARKER") != std::string::npos, "卡片消息未进入群历史");
     require(shared.find("时间") != std::string::npos || shared.find("\\u65f6\\u95f4") != std::string::npos, "命令消息未进入群历史");
 
@@ -531,12 +620,11 @@ static void routingAndHistory(Services& services)
     const auto cleared_request = services.chats().back();
     for (const auto& message : cleared_request.at("messages"))
     {
-        const auto background = modelContent(message);
-        if (background.is_object() && background.contains("profiles"))
-            for (const auto& profile : background.at("profiles"))
-                if (profile.at("user_id") == "77") cleared = profile.at("card") == "";
+        const auto record = modelContent(message);
+        if (record.is_object() && record.value("message_id", "") == cleared_card.at("message_id").dump())
+            cleared = record.at("card") == "" && record.at("nickname") == "member_77" && record.at("user_id") == "77";
     }
-    require(cleared, "成员清空群名片后画像仍保留旧名片");
+    require(cleared, "当前消息未保留实际昵称、发送者和已清空群名片");
 
     services.judge("YES");
     deliver(bot, event(json::array({text("JUDGE_YES_MARKER")})));
@@ -545,14 +633,14 @@ static void routingAndHistory(Services& services)
     const std::string judge = services.judges().back().at("messages").dump();
     require(occurrences(judge, "JUDGE_YES_MARKER") == 1, "判定当前消息重复");
     require(judge.find("DIRECT_REPLY_MARKER") != std::string::npos || judge.find("SHARED_REPLY_MARKER") != std::string::npos, "判定短上下文缺失bot回复");
-    require(judge.find("SYSTEM_PERSONA_MARKER") != std::string::npos && judge.find("GROUP_123_PERSONA_MARKER") != std::string::npos, "判定没有复用当前人设");
+    require(judge.find("SYSTEM_PERSONA_MARKER") != std::string::npos && judge.find("GROUP_123_PERSONA_MARKER") == std::string::npos, "判定缺少静态人设或仍注入群人格");
     require(judge.find("GROUP_123_PROFILE_MARKER") == std::string::npos, "判定携带长期用户画像");
 
     services.judge("NO");
     sends = services.sends().size();
     deliver(bot, event(json::array({text("NO_SILENT_MARKER")})));
     require(services.judges().size() == ++judges && services.chats().size() == chats && services.sends().size() == sends, "NO且概率0未沉默");
-    CHAT_REPLY_PROBABILITY = 1;
+    CHAT_LLM_REPLY_PROBABILITY = 1;
     services.chat("[SILENT]");
     deliver(bot, event(json::array({text("PROBABILITY_SILENT_MARKER")})));
     require(services.judges().size() == ++judges && services.chats().size() == ++chats && services.sends().size() == sends, "概率插话沉默标记被发送");
@@ -565,28 +653,28 @@ static void routingAndHistory(Services& services)
     for (bool invalid_json : {false, true})
     {
         services.judge("unexpected-label", invalid_json);
-        CHAT_REPLY_PROBABILITY = 0;
+        CHAT_LLM_REPLY_PROBABILITY = 0;
         deliver(bot, event(json::array({text("INVALID_JUDGE_SILENT")})));
         require(services.judges().size() == ++judges && services.chats().size() == chats, "无效判定被重试或调用聊天兜底");
-        CHAT_REPLY_PROBABILITY = 1;
+        CHAT_LLM_REPLY_PROBABILITY = 1;
         deliver(bot, event(json::array({text("INVALID_JUDGE_PROBABILITY")})));
         require(services.judges().size() == ++judges && services.chats().size() == ++chats, "无效判定未进入概率路径");
     }
 
     services.judge("NO", false, 1500);
-    CHAT_REPLY_PROBABILITY = 0;
+    CHAT_LLM_REPLY_PROBABILITY = 0;
     deliver(bot, event(json::array({text("TIMEOUT_JUDGE_SILENT")})));
     require(services.judges().size() == ++judges && services.chats().size() == chats, "判定超时重试或触发聊天");
-    CHAT_REPLY_PROBABILITY = 1;
+    CHAT_LLM_REPLY_PROBABILITY = 1;
     deliver(bot, event(json::array({text("TIMEOUT_JUDGE_PROBABILITY")})));
     require(services.judges().size() == ++judges && services.chats().size() == ++chats, "判定超时概率命中未触发聊天");
     services.judge("NO");
     const auto judge_host = JUDGE_HOST;
     JUDGE_HOST = "http://127.0.0.1:1";
-    CHAT_REPLY_PROBABILITY = 0;
+    CHAT_LLM_REPLY_PROBABILITY = 0;
     deliver(bot, event(json::array({text("NETWORK_JUDGE_SILENT")})));
     require(services.chats().size() == chats, "判定网络失败概率0触发聊天");
-    CHAT_REPLY_PROBABILITY = 1;
+    CHAT_LLM_REPLY_PROBABILITY = 1;
     deliver(bot, event(json::array({text("NETWORK_JUDGE_PROBABILITY")})));
     require(services.chats().size() == ++chats, "判定网络失败概率1未触发聊天");
     deliver(bot, event(json::array({at("42"), text("DIRECT_WITH_JUDGE_DOWN")})));
@@ -602,7 +690,7 @@ static void routingAndHistory(Services& services)
         replyForm(services.sends().back(), segments.front().at("type") == "at" ? direct_empty.at("message_id").dump() : "");
     }
     JUDGE_HOST = judge_host;
-    CHAT_REPLY_PROBABILITY = 0;
+    CHAT_LLM_REPLY_PROBABILITY = 0;
 
     services.chat("SLASH_REPLY_MARKER");
     deliver(bot, event(json::array({at("42"), text("/SLASH_CURRENT_MARKER")})));
@@ -640,7 +728,7 @@ static void multimodalAndReplies(Services& services, const std::filesystem::path
     BotServer bot;
     services.judge("NO");
     services.chat("IMAGE_DIRECT_REPLY");
-    CHAT_REPLY_PROBABILITY = 0;
+    CHAT_LLM_REPLY_PROBABILITY = 0;
     size_t judges = services.judges().size();
     size_t chats = services.chats().size();
     const std::string first_url = "https://images.example/first.png";
@@ -694,7 +782,7 @@ static void multimodalAndReplies(Services& services, const std::filesystem::path
     deliver(bot, event(json::array({image("https://images.example/silent.png")}), 812));
     require(services.judges().size() == ++judges && services.chats().size() == chats && services.sends().size() == sends,
         "图片概率未命中仍请求主模型或发送提示");
-    CHAT_REPLY_PROBABILITY = 1;
+    CHAT_LLM_REPLY_PROBABILITY = 1;
     services.chat("[SILENT]");
     deliver(bot, event(json::array({image("https://images.example/probability-silent.png")}), 813));
     require(services.judges().size() == ++judges && services.chats().size() == ++chats && services.sends().size() == sends,
@@ -705,29 +793,52 @@ static void multimodalAndReplies(Services& services, const std::filesystem::path
         "图片概率插话未传入主模型或未回复");
     require(imageUrls(services.chats().back().at("messages")) == json::array({"https://images.example/probability-reply.png"}), "图片概率分支丢失图片");
     replyForm(services.sends().back());
-    CHAT_REPLY_PROBABILITY = 0;
+    CHAT_LLM_REPLY_PROBABILITY = 0;
 
     const std::string historical_url = "https://images.example/member-a.png";
-    const auto historical = event(json::array({image(historical_url)}), 815, 88);
+    auto historical = event(json::array({image(historical_url)}), 815, 88);
+    historical["message"][0]["data"]["summary"] = historical_url;
+    historical["message"][0]["data"]["title"] = historical_url;
     deliver(bot, historical);
     deliver(bot, event(json::array({image("https://images.example/other-group.png")}), 816, 99));
     current = event(json::array({at("42"), text("ASK_MEMBER_A_IMAGE")}), 815, 77);
     deliver(bot, current);
     const auto history = services.chats().back().at("messages");
-    require(imageUrls(history) == json::array({historical_url}), "历史图片丢失、重复或混入其他群图片");
+    require(imageUrls(history).empty() && history.dump().find(historical_url) == std::string::npos, "未引用历史图片仍带原图或旁路URL");
     require(occurrences(history.dump(), "ASK_MEMBER_A_IMAGE") == 1, "当前图片追问进入请求多次");
     bool attributed = false;
     for (const auto& message : history)
     {
         const auto record = modelContent(message);
         if (record.is_object() && record.value("message_id", "") == historical.at("message_id").dump())
-            attributed = record.at("user_id") == "88" && imageUrls(json::array({message})) == json::array({historical_url});
+            attributed = record.at("user_id") == "88" && imageUrls(json::array({message})).empty() && record.at("media").size() == 1;
     }
-    require(attributed, "历史图片未与原发言人及消息对应");
-    AI_MAX_MESSAGES = 1;
+    require(attributed, "历史图片媒体标记未与原发言人及消息对应");
+    const auto referenced = event(json::array({at("42"), reply(historical.at("message_id").dump()), text("EXPLICIT_MEMBER_IMAGE_QUERY")}), 815, 77);
+    deliver(bot, referenced);
+    const auto explicit_images = services.chats().back().at("messages");
+    require(imageUrls(explicit_images) == json::array({historical_url}), "直接引用成员图片未附原图");
+    require(occurrences(explicit_images.dump(), historical.at("message_id").dump()) >= 1, "直接引用失去原消息ID");
+    size_t referenced_copies = 0;
+    for (const auto& message : explicit_images)
+    {
+        const auto record = modelContent(message);
+        if (record.is_object() && record.value("message_id", "") == historical.at("message_id").dump()) ++referenced_copies;
+    }
+    require(referenced_copies == 1, "直接引用与近期窗口重复注入原消息");
+    deliver(bot, event(json::array({at("42"), reply(historical.at("message_id").dump()),
+        image("https://images.example/current-with-reference.png"), text("BOTH_IMAGE_SOURCES")}), 815));
+    require(imageUrls(services.chats().back().at("messages")) == json::array({historical_url, "https://images.example/current-with-reference.png"}),
+        "当前图与直接引用原图未同时保留或混入其他图片");
+    const auto before_member_judges = services.judges().size();
+    const auto before_member_chats = services.chats().size();
+    deliver(bot, event(json::array({reply(historical.at("message_id").dump()), text("MEMBER_IMAGE_NOT_DIRECT_WAKE")}), 815));
+    require(services.judges().size() == before_member_judges + 1 && services.chats().size() == before_member_chats,
+        "引用其他成员图片改变了判定和概率唤醒路径");
+    CHAT_LLM_MAX_MESSAGES = 1;
     deliver(bot, event(json::array({at("42"), text("CROPPED_IMAGE_QUERY")}), 815));
     require(imageUrls(services.chats().back().at("messages")).empty(), "裁剪历史消息后仍发送所属图片");
-    AI_MAX_MESSAGES = 120;
+    CHAT_LLM_MAX_MESSAGES = 120;
 
     current = event(json::array({at("42"), {{"type", "image"}, {"data", json::object()}}}), 817);
     deliver(bot, current);
@@ -756,21 +867,27 @@ static void multimodalAndReplies(Services& services, const std::filesystem::path
     services.judge("NO");
     services.chat("AFTER_IMAGE_FAILURE");
 
-    const auto original_budget = AI_CONTEXT_BYTES;
-    AI_CONTEXT_BYTES = 6000;
+    const auto original_budget = CHAT_LLM_CONTEXT_TOKENS;
+    CHAT_LLM_CONTEXT_TOKENS = 3000;
     deliver(bot, event(json::array({image("https://images.example/" + std::string(10000, 'U'))}), 821));
     deliver(bot, event(json::array({at("42"), text("URL_BUDGET_CURRENT")}), 821));
     const auto bounded = services.chats().back().at("messages");
-    require(bounded.dump().size() + 4 * AI_MAX_TOKENS <= AI_CONTEXT_BYTES && imageUrls(bounded).empty(), "图片URL未纳入字节预算裁剪");
+    require(estimatedTokens(bounded) + CHAT_LLM_MAX_TOKENS <= CHAT_LLM_CONTEXT_TOKENS && imageUrls(bounded).empty(), "纯文字追问预算失效或仍附历史原图");
     require(bounded.dump().find("URL_BUDGET_CURRENT") != std::string::npos, "图片URL预算裁剪丢失当前问题");
     chats = services.chats().size();
     sends = services.sends().size();
     current = event(json::array({at("42"), image("https://images.example/" + std::string(10000, 'V'))}), 823);
     deliver(bot, current);
-    require(services.chats().size() == chats && services.sends().size() == sends + 1, "当前图片超过预算仍发请求或未提示失败");
+    require(services.chats().size() == chats && services.sends().size() == sends + 1, "当前图片视觉开销超过预算仍发请求或未提示失败");
     replyForm(services.sends().back(), current.at("message_id").dump());
     require(services.sends().back().dump().find("AFTER_IMAGE_FAILURE") == std::string::npos, "图片预算不足伪造聊天成功");
-    AI_CONTEXT_BYTES = original_budget;
+    require(services.sends().back().dump().find("预算") != std::string::npos, "视觉预算不足缺少明确提示");
+    CHAT_LLM_CONTEXT_TOKENS = 6000;
+    current = event(json::array({at("42"), image("https://images.example/" + std::string(10000, 'W'))}), 825);
+    deliver(bot, current);
+    require(services.chats().size() == chats + 1 && imageUrls(services.chats().back().at("messages")).size() == 1,
+        "图片URL字节长度被错误代替视觉token开销");
+    CHAT_LLM_CONTEXT_TOKENS = original_budget;
 
     const auto image_trigger = MessageManager::getMessageContext(event(json::array({text("BOT_IMAGE_COMMAND")}), 824));
     const auto image_receipts = MessageManager::send_msg(image_trigger,
@@ -782,7 +899,7 @@ static void multimodalAndReplies(Services& services, const std::filesystem::path
     deliver(bot, image_echo);
     image_echo["message"] = json::array({MessageManager::buildMsg("image", "https://images.example/sent-file.png")});
     deliver(bot, image_echo);
-    deliver(bot, event(json::array({at("42"), text("BOT_IMAGE_HISTORY_QUERY")}), 824));
+    deliver(bot, event(json::array({at("42"), reply(image_receipts.front().message_id), text("BOT_IMAGE_HISTORY_QUERY")}), 824));
     bool bot_image = false;
     const auto bot_history = services.chats().back().at("messages");
     for (const auto& message : bot_history)
@@ -795,7 +912,7 @@ static void multimodalAndReplies(Services& services, const std::filesystem::path
     require(bot_image, "机器人历史图片未使用可传图的user角色或丢失bot身份");
     require(imageUrls(bot_history) == json::array({"https://images.example/bot-history.png"}), "同ID自身回流丢失或重复图片URL");
     eventually([&] {
-        const auto timeline = readJson(root / "data/AiModule/group_timeline.json").at("group_timeline");
+        const auto timeline = readTimeline(root / "data/AiModule");
         if (!timeline.contains("824")) return false;
         size_t copies = 0;
         bool retained_url = false;
@@ -816,8 +933,7 @@ static void multimodalAndReplies(Services& services, const std::filesystem::path
     try
     {
         eventually([&] {
-            return std::filesystem::exists(root / "data/AiModule/group_timeline.json") &&
-                readJson(root / "data/AiModule/group_timeline.json").dump().find("https://images.example/concurrent.png") != std::string::npos;
+            return readTimeline(root / "data/AiModule").dump().find("https://images.example/concurrent.png") != std::string::npos;
         }, "图片未在生成期间进入群时间线");
         collected = true;
     }
@@ -827,13 +943,136 @@ static void multimodalAndReplies(Services& services, const std::filesystem::path
     incoming.get();
     require(collected, "图片未在生成期间进入群时间线");
     deliver(bot, event(json::array({at("42"), text("IMAGE_CONCURRENT_CHECK")}), 822));
-    require(imageUrls(services.chats().back().at("messages")) == json::array({"https://images.example/concurrent.png"}), "生成完成覆盖期间收到的图片");
+    require(imageUrls(services.chats().back().at("messages")).empty() && services.chats().back().at("messages").dump().find("image") != std::string::npos,
+        "生成期间收到图片未保留媒体标记或未引用仍重复附图");
+}
+
+static void temporalBoundaries(Services& services)
+{
+    ChatTaskManager manager;
+    services.chat("TEMPORAL_REPLY");
+    const auto future_event = event(json::array({image("https://images.example/future.png"), text("AFTER_CURRENT_EVENT_MARKER")}), 1701);
+    auto first = MessageManager::getMessageContext(event(json::array({at("42"), reply(future_event.at("message_id").dump()), text("CUTOFF_CURRENT_MARKER")}), 1701));
+    auto future = MessageManager::getMessageContext(future_event);
+    manager.recordIncoming(first);
+    manager.recordIncoming(future);
+    manager.handleTask(first);
+    auto messages = services.chats().back().at("messages");
+    require(messages.dump().find("AFTER_CURRENT_EVENT_MARKER") == std::string::npos && imageUrls(messages).empty() &&
+        messages.dump().find("unavailable") != std::string::npos, "本次事件之后的消息通过近期窗口或直接引用进入请求");
+    auto expired_event = event(json::array({image("https://images.example/expired-record.png"), text("EXPIRED_HISTORY_MARKER")}), 1701);
+    expired_event["time"] = static_cast<int64_t>(std::time(nullptr)) - 31 * 86400;
+    auto expired = MessageManager::getMessageContext(expired_event);
+    manager.recordIncoming(expired);
+    auto current = MessageManager::getMessageContext(event(json::array({at("42"), reply(expired.message_id), text("EXPIRED_REFERENCE_CURRENT")}), 1701));
+    manager.recordIncoming(current);
+    manager.handleTask(current);
+    messages = services.chats().back().at("messages");
+    require(messages.dump().find("EXPIRED_HISTORY_MARKER") == std::string::npos && imageUrls(messages).empty() &&
+        messages.dump().find("unavailable") != std::string::npos, "过期消息通过近期窗口或直接引用进入请求");
+    require(manager.shutdown(), "时间边界测试最终归档失败");
+}
+
+static void protectedInputs(Services& services)
+{
+    ChatTaskManager manager;
+    const auto saved_budget = CHAT_LLM_CONTEXT_TOKENS;
+    const auto saved_prompt = CHAT_LLM_SYS_PROMPTS;
+    CHAT_LLM_CONTEXT_TOKENS = 4000;
+    const auto original = event(json::array({text("PROTECTED_REFERENCE_" + std::string(4000, 'R'))}), 1702, 88);
+    auto reference = MessageManager::getMessageContext(original);
+    manager.recordIncoming(reference);
+    auto noise = MessageManager::getMessageContext(event(json::array({text(std::string(20000, 'N'))}), 1702, 89));
+    manager.recordIncoming(noise);
+    auto current = MessageManager::getMessageContext(event(json::array({at("42"), reply(reference.message_id), text("PROTECTED_CURRENT_" + std::string(500, 'C'))}), 1702));
+    manager.recordIncoming(current);
+    const auto before = services.chats().size();
+    manager.handleTask(current);
+    require(services.chats().size() == before + 1, "可容纳完整保护输入时未调用聊天模型");
+    const auto messages = services.chats().back().at("messages");
+    bool full_reference = false;
+    bool full_current = false;
+    for (const auto& message : messages)
+    {
+        const auto record = modelContent(message);
+        if (!record.is_object()) continue;
+        if (record.value("message_id", "") == reference.message_id) full_reference = record.at("text") == reference.pmsgsegs.text;
+        if (record.value("message_id", "") == current.message_id) full_current = record.at("text") == current.pmsgsegs.text;
+    }
+    require(full_reference && full_current && messages.dump().find(std::string(10000, 'N')) == std::string::npos,
+        "预算裁剪截短当前问题或直接引用，或保留超长普通历史");
+    require(estimatedTokens(messages) + CHAT_LLM_MAX_TOKENS <= CHAT_LLM_CONTEXT_TOKENS, "保护输入请求超过token预算");
+    CHAT_LLM_SYS_PROMPTS = std::string(20000, 'P');
+    const auto failed = manager.handleTask(current);
+    require(services.chats().size() == before + 1 && failed.first.dump().find("预算") != std::string::npos,
+        "静态提示词超预算被截短或缺少明确提示");
+    CHAT_LLM_CONTEXT_TOKENS = saved_budget;
+    CHAT_LLM_SYS_PROMPTS = saved_prompt;
+    require(manager.shutdown(), "保护输入测试最终归档失败");
+}
+
+static void archivedReferences(Services& services, const std::filesystem::path& root)
+{
+    CHAT_LLM_MAX_MESSAGES = 2;
+    JUDGE_MAX_MESSAGES = 1;
+    CHAT_LLM_REPLY_PROBABILITY = 0;
+    services.judge("NO");
+    services.chat("ARCHIVED_BOT_REPLY");
+    const auto ancestor = event(json::array({image("https://images.example/no-recursive-image.png")}), 1601, 88);
+    const auto original = event(json::array({reply(ancestor.at("message_id").dump()), image("https://images.example/db-reference.png"), text("ARCHIVED_IMAGE_SOURCE")}), 1601, 89);
+    std::string bot_reply;
+    {
+        BotServer bot;
+        deliver(bot, ancestor);
+        deliver(bot, original);
+        deliver(bot, event(json::array({at("42"), text("ARCHIVED_BOT_INPUT")}), 1601));
+        bot_reply = services.lastMessageId();
+        for (int i = 0; i < 6; ++i)
+            deliver(bot, event(json::array({{{"type", "record"}, {"data", {{"file", "voice"}}}}}), 1601, 90));
+        require(bot.tsk_manager.shutdown(), "DB引用样本最终保存失败");
+    }
+    {
+        BotServer bot;
+        deliver(bot, event(json::array({at("42"), reply(original.at("message_id").dump()), text("RESTORE_EXPLICIT_IMAGE")}), 1601));
+        const auto messages = services.chats().back().at("messages");
+        require(imageUrls(messages) == json::array({"https://images.example/db-reference.png"}),
+            "DB直接引用未恢复原图或递归附带引用链图片");
+        size_t sources = 0;
+        for (const auto& message : messages)
+        {
+            const auto record = modelContent(message);
+            if (record.is_object() && record.value("message_id", "") == original.at("message_id").dump())
+            {
+                ++sources;
+                require(record.at("user_id") == "89" && record.at("timestamp") == original.at("time") &&
+                    record.at("reply_to") == ancestor.at("message_id").dump(), "DB引用未保留发送者、时间或引用关系");
+            }
+        }
+        require(sources == 1, "DB直接引用重复进入请求");
+        const auto judges = services.judges().size();
+        const auto chats = services.chats().size();
+        deliver(bot, event(json::array({reply(bot_reply), text("ARCHIVED_BOT_DIRECT_WAKE")}), 1601));
+        require(services.chats().size() == chats + 1 && services.judges().size() == judges,
+            "DB确认的机器人回复未沿用直接唤醒");
+        for (const auto& missing : {original.at("message_id").dump(), std::string("never-existed")})
+        {
+            deliver(bot, event(json::array({at("42"), reply(missing), text("MISSING_REFERENCE_QUERY")}), 1602));
+            const auto absent = services.chats().back().at("messages");
+            require(imageUrls(absent).empty() && absent.dump().find("unavailable") != std::string::npos,
+                "跨群或缺失引用未保留不可用标记，或混入其他群原图");
+        }
+        require(bot.tsk_manager.shutdown(), "DB引用测试停止保存失败");
+    }
+    require(readTimeline(root / "data/AiModule").at("1601").size() > CHAT_LLM_MAX_MESSAGES,
+        "内存窗口淘汰删除了有效归档");
+    CHAT_LLM_MAX_MESSAGES = 120;
+    JUDGE_MAX_MESSAGES = 12;
 }
 
 static void pokeActions(Services& services, const std::filesystem::path& root)
 {
     BotServer bot;
-    CHAT_REPLY_PROBABILITY = 0;
+    CHAT_LLM_REPLY_PROBABILITY = 0;
     services.judge("NO");
     const auto judges = services.judges().size();
     size_t chats = services.chats().size();
@@ -885,10 +1124,10 @@ static void pokeActions(Services& services, const std::filesystem::path& root)
 
     services.chat(json{{"text", ""}, {"poke", true}}.dump());
     auto first = poke(905, 77);
-    first["time"] = 1700000011;
+    first["time"] = static_cast<int64_t>(std::time(nullptr));
     deliver(bot, first);
     auto second = poke(905, 88);
-    second["time"] = 1700000012;
+    second["time"] = static_cast<int64_t>(std::time(nullptr));
     deliver(bot, second);
     chats += 2;
     pokes += 2;
@@ -901,8 +1140,8 @@ static void pokeActions(Services& services, const std::filesystem::path& root)
         const auto record = modelContent(message);
         if (!record.is_object() || record.value("event_type", "") != "poke") continue;
         if (record.at("bot") == true) ++outgoing_seen;
-        else if (record.at("user_id") == "77" && record.at("timestamp") == 1700000011) ++first_seen;
-        else if (record.at("user_id") == "88" && record.at("timestamp") == 1700000012) ++second_seen;
+        else if (record.at("user_id") == "77" && record.at("timestamp") == first.at("time")) ++first_seen;
+        else if (record.at("user_id") == "88" && record.at("timestamp") == second.at("time")) ++second_seen;
     }
     require(first_seen == 1 && second_seen == 1 && outgoing_seen == 1, "连续无消息ID的拍事件重复、漏失或丢失已成功回拍");
 
@@ -946,9 +1185,9 @@ static void pokeActions(Services& services, const std::filesystem::path& root)
     services.pokeResponse();
     require(services.judges().size() == judges && services.chats().size() == chats, "拍路径调用判定或重复模型请求");
 
-    const auto timeline_path = root / "data/AiModule/group_timeline.json";
+    const auto timeline_path = root / "data/AiModule";
     eventually([&] {
-        const auto timelines = readJson(timeline_path).at("group_timeline");
+        const auto timelines = readTimeline(timeline_path);
         if (!timelines.contains("910") || timelines.at("910").size() != 3) return false;
         const auto verify = [&](const std::string& group, size_t text_count, size_t action_count) {
             size_t texts = 0;
@@ -979,34 +1218,53 @@ static void windowBudgetAndConcurrency(Services& services)
     BotServer bot;
     services.judge("NO");
     services.chat("WINDOW_REPLY");
-    CHAT_REPLY_PROBABILITY = 0;
-    AI_MAX_MESSAGES = 4;
+    CHAT_LLM_REPLY_PROBABILITY = 0;
+    CHAT_LLM_MAX_MESSAGES = 4;
     JUDGE_MAX_MESSAGES = 2;
     for (int i = 0; i < 8; ++i)
         deliver(bot, event(json::array({text("WINDOW_HISTORY_" + std::to_string(i))}), 321));
     deliver(bot, event(json::array({at("42"), text("WINDOW_CURRENT_MARKER")}), 321));
-    std::string messages = services.chats().back().at("messages").dump();
-    require(messages.find("WINDOW_HISTORY_0") == std::string::npos && messages.find("WINDOW_HISTORY_7") != std::string::npos, "聊天窗口未裁剪最早历史");
+    const auto window_messages = services.chats().back().at("messages");
+    std::string messages = window_messages.dump();
+    std::string recent;
+    for (const auto& message : window_messages)
+    {
+        const auto record = modelContent(message);
+        if (record.is_object() && record.contains("sequence")) recent += record.dump();
+    }
+    require(recent.find("WINDOW_HISTORY_0") == std::string::npos && recent.find("WINDOW_HISTORY_7") != std::string::npos, "聊天窗口未裁剪最早历史");
     deliver(bot, event(json::array({text("JUDGE_WINDOW_CURRENT")}), 321));
     messages = services.judges().back().at("messages").dump();
     require(messages.find("WINDOW_HISTORY_6") == std::string::npos && occurrences(messages, "JUDGE_WINDOW_CURRENT") == 1, "判定未使用较短同源窗口");
 
-    AI_CONTEXT_BYTES = 1800;
-    JUDGE_CONTEXT_BYTES = 1600;
-    AI_SYS_PROMPTS = std::string(5000, 'P');
+    CHAT_LLM_CONTEXT_TOKENS = 1800;
+    JUDGE_CONTEXT_TOKENS = 1600;
+    CHAT_LLM_SYS_PROMPTS = std::string(5000, 'P');
+    auto chats = services.chats().size();
+    auto judges = services.judges().size();
+    auto sends = services.sends().size();
     deliver(bot, event(json::array({at("42"), text("BUDGET_CURRENT_" + std::string(6000, 'X'))}), 321));
-    const json chat = services.chats().back();
-    require(chat.at("messages").dump().size() + 4 * AI_MAX_TOKENS <= AI_CONTEXT_BYTES, "聊天总预算未包含人设、元数据和输出预留");
-    require(chat.at("messages").dump().find("BUDGET_CURRENT_") != std::string::npos, "超预算丢失当前消息");
+    require(services.chats().size() == chats && services.sends().size() == sends + 1,
+        "必需输入超预算仍请求模型或未给直接唤醒提示");
+    require(services.sends().back().dump().find("预算") != std::string::npos, "直接唤醒缺少明确超预算提示");
     deliver(bot, event(json::array({text("JUDGE_BUDGET_CURRENT_" + std::string(6000, 'Y'))}), 321));
-    const json judge = services.judges().back();
-    require(judge.at("messages").dump().size() + 4 * JUDGE_MAX_TOKENS <= JUDGE_CONTEXT_BYTES, "判定总预算未生效");
-    require(judge.at("messages").dump().find("JUDGE_BUDGET_CURRENT_") != std::string::npos, "判定超预算丢失当前消息");
+    require(services.judges().size() == judges && services.chats().size() == chats && services.sends().size() == sends + 1,
+        "判定超预算仍请求模型或普通路径发送错误提示");
+    CHAT_LLM_SYS_PROMPTS = "SYSTEM_PERSONA_MARKER";
+    CHAT_LLM_CONTEXT_TOKENS = 32000;
+    JUDGE_CONTEXT_TOKENS = 1;
+    CHAT_LLM_REPLY_PROBABILITY = 1;
+    deliver(bot, event(json::array({text("JUDGE_BUDGET_PROBABILITY_FALLBACK")}), 322));
+    require(services.judges().size() == judges && services.chats().size() == chats + 1,
+        "判定预算失败未沿用概率路径");
+    require(estimatedTokens(services.chats().back().at("messages")) + CHAT_LLM_MAX_TOKENS <= CHAT_LLM_CONTEXT_TOKENS,
+        "概率回退的聊天请求超过自身token预算");
+    CHAT_LLM_REPLY_PROBABILITY = 0;
 
-    AI_CONTEXT_BYTES = 64000;
-    JUDGE_CONTEXT_BYTES = 12000;
-    AI_SYS_PROMPTS = "SYSTEM_PERSONA_MARKER";
-    AI_MAX_MESSAGES = 120;
+    CHAT_LLM_CONTEXT_TOKENS = 32000;
+    JUDGE_CONTEXT_TOKENS = 4000;
+    CHAT_LLM_SYS_PROMPTS = "SYSTEM_PERSONA_MARKER";
+    CHAT_LLM_MAX_MESSAGES = 120;
     JUDGE_MAX_MESSAGES = 12;
     services.chat("CONCURRENT_SENT_REPLY");
     services.blockNextChat();
@@ -1024,18 +1282,18 @@ static void windowBudgetAndConcurrency(Services& services)
     require(messages.find("record") != std::string::npos, "生成期间新消息未保留媒体标记");
 }
 
-static void persistenceWithoutAi(Services& services, const std::filesystem::path& root)
+static void persistenceWithoutChatLlm(Services& services, const std::filesystem::path& root)
 {
-    const auto timeline = root / "data/AiModule/group_timeline.json";
+    const auto timeline = root / "data/AiModule";
     const auto judges = services.judges().size();
     const auto chats = services.chats().size();
     services.judge("NO");
-    CHAT_REPLY_PROBABILITY = 0;
+    CHAT_LLM_REPLY_PROBABILITY = 0;
     {
         BotServer bot;
         deliver(bot, event(json::array({text("PERSIST_WITHOUT_AI_MARKER")}), 654, 81));
         require(services.judges().size() == judges + 1 && services.chats().size() == chats, "持久化样本意外触发聊天");
-        eventually([&] { return std::filesystem::exists(timeline) && readJson(timeline).dump().find("PERSIST_WITHOUT_AI_MARKER") != std::string::npos; }, "未触发AI的普通消息未定时保存");
+        eventually([&] { return std::filesystem::exists(timeline / "messages.sqlite3") && readTimeline(timeline).dump().find("PERSIST_WITHOUT_AI_MARKER") != std::string::npos; }, "未触发AI的普通消息未定时保存");
     }
     {
         BotServer bot;
@@ -1045,8 +1303,8 @@ static void persistenceWithoutAi(Services& services, const std::filesystem::path
         require(messages.find("PERSIST_WITHOUT_AI_MARKER") != std::string::npos, "重启未恢复已经保存的普通群历史");
         require(messages.find("LEGACY_HISTORY_MARKER") == std::string::npos, "旧个人历史被伪造为群时间线");
         deliver(bot, event(json::array({at("42"), text("RESTORED_IMAGE_QUERY")}), 822));
-        require(imageUrls(services.chats().back().at("messages")) == json::array({"https://images.example/concurrent.png"}),
-            "重启未恢复已保存图片URL或未重新作为图片输入");
+        require(imageUrls(services.chats().back().at("messages")).empty() && services.chats().back().at("messages").dump().find("image") != std::string::npos,
+            "重启丢失历史图片媒体标记或无引用仍附图");
         deliver(bot, event(json::array({at("42"), text("RESTORED_POKE_QUERY")}), 902));
         const auto restored_pokes = services.chats().back().at("messages");
         size_t incoming_pokes = 0;
@@ -1062,73 +1320,46 @@ static void persistenceWithoutAi(Services& services, const std::filesystem::path
     }
 }
 
-static void summaries(Services& services, const std::filesystem::path& root)
+static void removedSummaries(Services& services, const std::filesystem::path& root)
 {
-    AI_MAX_CHAT_ROUNDS = 10;
-    CHAT_REPLY_PROBABILITY = 0;
-    services.judge("NO");
-    services.chat("SUMMARY_CHAT_REPLY");
+    const auto data = root / "data/AiModule";
+    const std::vector<std::string> files = {"persona_map.json", "users_profile_map.json", "session_round_counter.json", "group_round_counter.json"};
+    for (const auto& filename : files)
+    {
+        std::ofstream output(data / filename);
+        output << "{damaged-legacy-json";
+    }
+    services.chat("STATIC_PROMPT_REPLY");
+    const auto before = services.chats().size();
     {
         BotServer bot;
-        deliver(bot, event(json::array({text("OTHER_MEMBER_SUMMARY_SECRET")}), 777, 8));
-        deliver(bot, event(json::array({at("42"), text("PROFILE_OWNER_FIRST_MARKER")}), 777, 7));
-        const size_t before = services.chats().size();
-        deliver(bot, event(json::array({at("42"), text("PROFILE_OWNER_SECOND_MARKER")}), 777, 7));
-        const auto calls = services.chats();
-        bool saw_persona = false;
-        bool saw_profile = false;
-        for (size_t i = before; i < calls.size(); ++i)
-        {
-            const std::string instructions = calls[i].at("messages").at(0).at("content").get<std::string>();
-            const std::string messages = calls[i].at("messages").dump();
-            if (instructions.find("群人格总结器") != std::string::npos)
-            {
-                saw_persona = true;
-                require(messages.find("OTHER_MEMBER_SUMMARY_SECRET") != std::string::npos, "群人格总结遗漏本群其他成员发言");
-                require(messages.find("OTHER_GROUP_SECRET_MARKER") == std::string::npos, "群人格总结混入其他群发言");
-            }
-            if (instructions.find("用户画像总结器") != std::string::npos)
-            {
-                saw_profile = true;
-                require(messages.find("PROFILE_OWNER_FIRST_MARKER") != std::string::npos, "成员画像总结遗漏本人发言");
-                require(messages.find("OTHER_MEMBER_SUMMARY_SECRET") == std::string::npos, "其他成员发言被归入当前成员画像");
-            }
-            require(calls[i].at("model") == AI_MODEL, "总结使用了独立判定模型");
-            require(calls[i].at("messages").dump().size() + 4 * AI_MAX_TOKENS <= AI_CONTEXT_BYTES, "总结请求超出主模型预算");
-        }
-        require(saw_persona && saw_profile, "成功出站后的群人格或成员画像总结未触发");
-        eventually([&] {
-            return readJson(root / "data/AiModule/persona_map.json").dump().find("UPDATED_PERSONA_MARKER") != std::string::npos &&
-                readJson(root / "data/AiModule/users_profile_map.json").dump().find("UPDATED_PROFILE_MARKER") != std::string::npos;
-        }, "总结结果未保存");
-        for (int failure = 0; failure < 3; ++failure)
-        {
-            services.summariesInvalid(failure == 0, failure == 1, failure == 2);
-            deliver(bot, event(json::array({at("42"), text("SUMMARY_FAILURE_CHECK")}), 777, 7));
-            const std::string messages = services.chats().back().at("messages").dump();
-            require(messages.find("UPDATED_PERSONA_MARKER") != std::string::npos && messages.find("UPDATED_PROFILE_MARKER") != std::string::npos &&
-                messages.find("INCOMPLETE_UPDATED_") == std::string::npos, "总结失败、空结果或不完整流覆盖已有群人格或成员画像");
-            eventually([&] {
-                const auto sessions = readJson(root / "data/AiModule/session_round_counter.json").at("session_round_counter");
-                const auto groups = readJson(root / "data/AiModule/group_round_counter.json").at("group_round_counter");
-                return sessions.at("group_777_user_7") == failure + 2 && groups.at("777") == failure + 2;
-            }, "总结失败清除了待总结计数");
-        }
-        services.summariesInvalid(false);
-        deliver(bot, event(json::array({at("42"), text("SUMMARY_RETRY_SUCCESS")}), 777, 7));
-        eventually([&] {
-            return readJson(root / "data/AiModule/session_round_counter.json").at("session_round_counter").at("group_777_user_7") == 1 &&
-                readJson(root / "data/AiModule/group_round_counter.json").at("group_round_counter").at("777") == 1;
-        }, "完整有效总结未消耗已有待总结计数");
+        for (int i = 0; i < 35; ++i)
+            deliver(bot, event(json::array({at("42"), text("STATIC_PROMPT_INPUT_" + std::to_string(i))}), 777, 7));
+        require(bot.tsk_manager.shutdown(), "正常停止未完成最终入库");
     }
-    AI_MAX_CHAT_ROUNDS = 100000;
+    const auto calls = services.chats();
+    require(calls.size() == before + 35, "连续聊天产生额外总结调用");
+    for (size_t i = before; i < calls.size(); ++i)
+    {
+        const auto request = calls[i].at("messages").dump();
+        require(request.find("SYSTEM_PERSONA_MARKER") != std::string::npos, "静态提示词被删除");
+        require(request.find("GROUP_123_PERSONA_MARKER") == std::string::npos && request.find("GROUP_123_PROFILE_MARKER") == std::string::npos,
+            "停用的画像或人格进入请求");
+        require(request.find("总结器") == std::string::npos, "仍在调用总结模型");
+    }
+    for (const auto& filename : files)
+    {
+        std::ifstream input(data / filename);
+        const std::string saved((std::istreambuf_iterator<char>(input)), std::istreambuf_iterator<char>());
+        require(saved == "{damaged-legacy-json", "停用的旧文件被写入");
+    }
 }
 
 static void streamingLifecycle(Services& services)
 {
     BotServer bot;
     const auto judges = services.judges().size();
-    const auto timeout = AI_TIMEOUT_SECONDS;
+    const auto timeout = CHAT_LLM_TIMEOUT_SECONDS;
     services.chat("DEFAULT_STREAM_REPLY");
     const std::string fragmented = ": heartbeat\r\n\r\nevent: message\r\n"
         "data: {\"choices\":\r\ndata: [{\"index\":0,\"delta\":{\"content\":\"中文正文\"}}]}\r\n\r\n"
@@ -1173,7 +1404,7 @@ static void streamingLifecycle(Services& services)
         const std::string data = fault == 3 ? incomplete + "data: {bad-json}\r\n\r\ndata: [DONE]\r\n\r\n" :
             fault == 4 ? incomplete + "data: [DONE]" : incomplete;
         services.stream(data, 0, fault == 1, fault == 2 ? 1200 : 0);
-        AI_TIMEOUT_SECONDS = fault == 2 ? 1 : timeout;
+        CHAT_LLM_TIMEOUT_SECONDS = fault == 2 ? 1 : timeout;
         services.judge("YES");
         for (int kind = 0; kind < 3; ++kind)
         {
@@ -1188,7 +1419,7 @@ static void streamingLifecycle(Services& services)
                     "流失败未沿用直接唤醒失败提示");
         }
     }
-    AI_TIMEOUT_SECONDS = 1;
+    CHAT_LLM_TIMEOUT_SECONDS = 1;
     const auto slow_stream = streamReply("TOTAL_TIMEOUT_PRIVATE_MARKER");
     services.stream(slow_stream, slow_stream.size() / 8, false, 0, 200);
     sends = services.sends().size();
@@ -1196,7 +1427,7 @@ static void streamingLifecycle(Services& services)
     require(services.chats().size() == ++chats && services.sends().size() == sends + 1 &&
         services.sends().back().at("message").back().at("data").at("text") == "暂时无法获取回复，请稍后再试。",
         "持续收到分片时请求总超时未生效");
-    AI_TIMEOUT_SECONDS = timeout;
+    CHAT_LLM_TIMEOUT_SECONDS = timeout;
     services.stream();
     services.judge("NO");
     services.chat("AFTER_INCOMPLETE_STREAM");
@@ -1214,26 +1445,28 @@ static void legacyEmptyAndDamaged(const std::filesystem::path& root)
     DATA_PATH = (root / "empty-data").string();
     const auto data = std::filesystem::path(DATA_PATH) / "AiModule";
     std::filesystem::create_directories(data);
-    writeJson(data / "persona_map.json", nullptr);
-    writeJson(data / "users_profile_map.json", nullptr);
-    writeJson(data / "session_round_counter.json", {{"session_round_counter", json::object()}});
-    writeJson(data / "group_round_counter.json", {{"group_round_counter", json::object()}});
+    for (const auto& filename : {"persona_map.json", "users_profile_map.json", "session_round_counter.json", "group_round_counter.json"})
     {
-        BotServer bot;
-        deliver(bot, event(json::array({text("NULL_LEGACY_MESSAGE_MARKER")})));
-        eventually([&] { return readJson(data / "group_timeline.json").dump().find("NULL_LEGACY_MESSAGE_MARKER") != std::string::npos; }, "旧null格式文件阻止新消息保存");
-    }
-    const auto path = data / "persona_map.json";
-    {
-        std::ofstream output(path);
+        std::ofstream output(data / filename);
         output << "{damaged-json";
     }
-    bool rejected = false;
-    try { BotServer bot; } catch (const std::exception&) { rejected = true; }
-    require(rejected, "损坏的持久化JSON未阻止启动");
-    std::ifstream input(path);
-    const std::string content((std::istreambuf_iterator<char>(input)), std::istreambuf_iterator<char>());
-    require(content == "{damaged-json", "损坏的旧数据文件被覆盖");
+    {
+        BotServer bot;
+        deliver(bot, event(json::array({text("DAMAGED_IGNORED_MESSAGE_MARKER")})));
+        require(bot.tsk_manager.shutdown(), "正常停止保存失败");
+    }
+    require(readTimeline(data).dump().find("DAMAGED_IGNORED_MESSAGE_MARKER") != std::string::npos,
+        "已停用旧文件损坏仍阻止新消息保存");
+    {
+        BotServer bot;
+        require(bot.tsk_manager.shutdown(), "重启后正常停止失败");
+    }
+    for (const auto& filename : {"persona_map.json", "users_profile_map.json", "session_round_counter.json", "group_round_counter.json"})
+    {
+        std::ifstream input(data / filename);
+        const std::string content((std::istreambuf_iterator<char>(input)), std::istreambuf_iterator<char>());
+        require(content == "{damaged-json", "已停用旧文件被覆盖");
+    }
     DATA_PATH = original_data;
 }
 
@@ -1258,18 +1491,21 @@ int main()
         std::cout << "分流、共享上下文、发送回执通过\n";
         multimodalAndReplies(services, root);
         std::cout << "图片多模态、来源隔离、回复形式通过\n";
+        temporalBoundaries(services);
+        protectedInputs(services);
+        archivedReferences(services, root);
         pokeActions(services, root);
         std::cout << "拍事件、动作约束、部分失败记录通过\n";
         windowBudgetAndConcurrency(services);
         std::cout << "窗口、输入预算、并发收集通过\n";
-        persistenceWithoutAi(services, root);
+        persistenceWithoutChatLlm(services, root);
         streamingLifecycle(services);
         std::cout << "流式分片、完整性、失败及延迟出站通过\n";
-        summaries(services, root);
+        removedSummaries(services, root);
         legacyEmptyAndDamaged(root);
         require(readJson(data / "session_memory.json") == legacy, "旧个人历史文件被修改");
         std::cout << "普通消息定时保存、重启恢复、旧文件保留通过\n";
-        std::cout << "人格与画像总结隔离、失败保留通过\n";
+        std::cout << "画像与人格移除、静态提示词和旧文件保留通过\n";
         if (created) std::filesystem::remove_all(root);
         return 0;
     }

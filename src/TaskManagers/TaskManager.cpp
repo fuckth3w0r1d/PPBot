@@ -53,3 +53,8 @@ void TaskManager::recordOutgoing(const MessageContext& recv, const SentMessage& 
     chat_manager->recordOutgoing(recv, sent.segments, sent.message_id, sent.is_poke);
 }
 
+bool TaskManager::shutdown()
+{
+    return chat_manager->shutdown();
+}
+

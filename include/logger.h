@@ -52,7 +52,7 @@ private:
 
     static std::string redact(std::string text)
     {
-        std::array<std::string, 5> secrets = {AI_KEY, JUDGE_KEY, SERVER_TOKEN, CLIENT_TOKEN, AMAP_KEY};
+        std::array<std::string, 6> secrets = {CHAT_LLM_KEY, JUDGE_KEY, EMBEDDING_KEY, SERVER_TOKEN, CLIENT_TOKEN, AMAP_KEY};
         std::sort(secrets.begin(), secrets.end(), [](const auto& first, const auto& second){return first.size() > second.size();});
         for(const auto& secret : secrets)
         {

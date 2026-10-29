@@ -9,6 +9,7 @@
 
 #include "ToolManagers/MessageManager.h"
 #include "ToolManagers/FileManager.h"
+#include "ToolManagers/ChatArchive.h"
 #include "TaskManagers/Commands.h"
 
 using json = nlohmann::json;
@@ -87,19 +88,16 @@ private:
     std::thread timer;
     bool running = true;
     uint64_t next_sequence = 0;
-    uint64_t state_version = 0;
-    uint64_t saved_version = 0;
     json group_timeline = json::object();
-    json persona_map = json::object();
-    json users_profile_map = json::object();
-    json session_round_counter = json::object();
-    json group_round_counter = json::object();
+    json pending_records = json::array();
+    std::unique_ptr<ChatArchive> archive;
+    std::mutex save_mutex;
+    std::mutex shutdown_mutex;
     std::unordered_map<std::string, std::shared_ptr<std::mutex>> request_mutexes;
 
-    void loadData();
     bool saveData();
+    void recordMessage(MessageContext& msgctx, bool confirmed);
     json buildMessages(const MessageContext& msgctx, bool judge, const std::string& purpose);
-    void updateSummaries(const MessageContext& msgctx);
 
 public:
     ChatTaskManager();
@@ -107,6 +105,7 @@ public:
     void recordOutgoing(const MessageContext& recv, const json& segments, const std::string& message_id, bool is_poke = false);
     bool canHandle(const MessageContext& msgctx) override;
     std::pair<json, std::string> handleTask(const MessageContext& msgctx) override;
+    bool shutdown();
     ~ChatTaskManager();
 };
 
@@ -126,4 +125,5 @@ public:
     // 总的任务处理函数
     std::pair<json, std::string> handleTask(const MessageContext& msgctx) override;
     void recordOutgoing(const MessageContext& recv, const SentMessage& sent);
+    bool shutdown();
 };

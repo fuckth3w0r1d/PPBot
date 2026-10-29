@@ -1,6 +1,7 @@
 #include "BotServer.h"
 #include "logger.h"
 #include "config.h"
+#include <chrono>
 #include <stdexcept>
 
 BotServer::BotServer()
@@ -22,8 +23,27 @@ BotServer::BotServer()
 void BotServer::start()
 {
     Logger::info("HTTP 服务启动: ", CLIENT_HOST + ":" + std::to_string(CLIENT_PORT));
-    if(!svr.listen(CLIENT_HOST, CLIENT_PORT))
+    bool success = false;
+    try
+    {
+        if(!stopping) success = svr.listen(CLIENT_HOST, CLIENT_PORT);
+    }
+    catch(...)
+    {
+        start_finished = true;
+        throw;
+    }
+    start_finished = true;
+    if(!success && !stopping)
         throw std::runtime_error("HTTP 监听失败 host=" + CLIENT_HOST + " port=" + std::to_string(CLIENT_PORT));
+}
+
+void BotServer::stop()
+{
+    if(stopping.exchange(true)) return;
+    while(!svr.is_running() && !start_finished)
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    if(svr.is_running()) svr.stop();
 }
 
 // 处理 POST 请求

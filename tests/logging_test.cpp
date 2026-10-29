@@ -10,6 +10,7 @@
 #include <sstream>
 #include <stdexcept>
 #include <thread>
+#include <ctime>
 
 static void require(bool value, const std::string& message)
 {
@@ -63,8 +64,8 @@ public:
                 require(body.value("stream", false), "日志验收主模型未使用流式请求");
                 require(!body.contains("thinking"), "日志验收主模型携带了判定专用思考参数");
                 const auto instructions = body.at("messages").at(0).at("content").get<std::string>();
-                if(instructions.find("用户画像总结器") != std::string::npos) path = "/profile";
-                if(instructions.find("群人格总结器") != std::string::npos) path = "/persona";
+                require(instructions.find("用户画像总结器") == std::string::npos && instructions.find("群人格总结器") == std::string::npos,
+                    "已停用总结调用仍然存在");
             }
             if(path == "/judge")
             {
@@ -81,6 +82,8 @@ public:
             }
             else if(path == "/send_group_msg")
                 response.set_content(json{{"status", "ok"}, {"retcode", 0}, {"data", {{"message_id", ++message_id}}}}.dump(), "application/json");
+            else if(path == "/embeddings")
+                response.set_content(json{{"data", json::array({{{"index", 0}, {"embedding", json::array({1.0, 0.0})}}})}}.dump(), "application/json");
             else if(path == "/judge")
             {
                 response.set_content(json{{"choices", json::array({{{"message", {{"content", "NO"}}}}})}}.dump(), "application/json");
@@ -138,15 +141,20 @@ static void configure(const Services& service, const std::filesystem::path& root
     BOT_NAME = "LogBot";
     SERVER_HOST = "127.0.0.1";
     SERVER_PORT = service.port;
-    AI_HOST = "http://127.0.0.1:" + std::to_string(service.port);
-    AI_PORT = service.port;
-    JUDGE_HOST = AI_HOST;
+    CHAT_LLM_HOST = "http://127.0.0.1:" + std::to_string(service.port);
+    CHAT_LLM_PORT = service.port;
+    JUDGE_HOST = CHAT_LLM_HOST;
     JUDGE_PORT = service.port;
-    AI_POST_PATH = "/chat";
+    CHAT_LLM_POST_PATH = "/chat";
     JUDGE_POST_PATH = "/judge";
-    AI_MAX_CHAT_ROUNDS = 100000;
-    CHAT_REPLY_PROBABILITY = 0;
-    AI_KEY = "ai-secret-for-log-test";
+    CHAT_LLM_REPLY_PROBABILITY = 0;
+    EMBEDDING_HOST = CHAT_LLM_HOST;
+    EMBEDDING_PORT = service.port;
+    EMBEDDING_POST_PATH = "/embeddings";
+    EMBEDDING_MODEL = "embedding-log-test";
+    EMBEDDING_TIMEOUT_SECONDS = 1;
+    EMBEDDING_KEY = "embedding-secret-for-log-test";
+    CHAT_LLM_KEY = "chat-llm-secret-for-log-test";
     JUDGE_KEY = "judge-secret-for-log-test";
     SERVER_TOKEN = "server-secret-for-log-test";
     CLIENT_TOKEN = "client-secret-for-log-test";
@@ -166,7 +174,7 @@ static json event(const std::string& content, bool direct = false)
     auto segments = json::array();
     if(direct) segments.push_back({{"type", "at"}, {"data", {{"qq", "42"}}}});
     segments.push_back({{"type", "text"}, {"data", {{"text", content}}}});
-    return {{"post_type", "message"}, {"message_type", "group"}, {"group_id", 123}, {"user_id", 77}, {"message_id", ++id}, {"time", 1700000000}, {"sender", {{"nickname", "Member"}, {"card", "Card"}}}, {"message", segments}};
+    return {{"post_type", "message"}, {"message_type", "group"}, {"group_id", 123}, {"user_id", 77}, {"message_id", ++id}, {"time", static_cast<int64_t>(std::time(nullptr))}, {"sender", {{"nickname", "Member"}, {"card", "Card"}}}, {"message", segments}};
 }
 
 static void deliver(BotServer& bot, const json& body)
@@ -201,16 +209,16 @@ static void formatter(const std::filesystem::path& log)
     require(logs.find("\\nforged-log-line") != std::string::npos && count(logs, "\n") == 1, "非JSON错误正文伪造多行日志");
 
     position = readText(log).size();
-    const std::string secrets = AI_KEY + " " + JUDGE_KEY + " " + SERVER_TOKEN + " " + CLIENT_TOKEN + " " + AMAP_KEY;
-    Logger::httpError("formatter-secret", 500, secrets + "\r\n" + std::string(1480, 'x') + AI_KEY + std::string(2500, 'z'));
-    Logger::httpError("boundary-key", 500, std::string(1530, 'x') + AI_KEY);
+    const std::string secrets = CHAT_LLM_KEY + " " + JUDGE_KEY + " " + EMBEDDING_KEY + " " + SERVER_TOKEN + " " + CLIENT_TOKEN + " " + AMAP_KEY;
+    Logger::httpError("formatter-secret", 500, secrets + "\r\n" + std::string(1480, 'x') + CHAT_LLM_KEY + std::string(2500, 'z'));
+    Logger::httpError("boundary-key", 500, std::string(1530, 'x') + CHAT_LLM_KEY);
     std::string unicode;
     for(int i = 0; i < 900; ++i) unicode += "中";
     Logger::httpError("utf8-detail", 500, unicode + "\n");
     logs = readText(log).substr(position);
-    for(const auto& secret : {AI_KEY, JUDGE_KEY, SERVER_TOKEN, CLIENT_TOKEN, AMAP_KEY})
+    for(const auto& secret : {CHAT_LLM_KEY, JUDGE_KEY, EMBEDDING_KEY, SERVER_TOKEN, CLIENT_TOKEN, AMAP_KEY})
         require(logs.find(secret) == std::string::npos, "配置密钥泄露到日志");
-    require(logs.find(AI_KEY.substr(0, 6)) == std::string::npos, "截断边界泄露未先脱敏的密钥片段");
+    require(logs.find(CHAT_LLM_KEY.substr(0, 6)) == std::string::npos, "截断边界泄露未先脱敏的密钥片段");
     std::istringstream lines(logs);
     for(std::string line; std::getline(lines, line);)
     {
@@ -227,7 +235,7 @@ static void concurrentLines(const std::filesystem::path& log)
     for(int worker = 0; worker < 4; ++worker)
         threads.emplace_back([worker] {
             for(int entry = 0; entry < 20; ++entry)
-                Logger::info("THREAD-" + std::to_string(worker) + "-" + std::to_string(entry), json{{"text", "first\nsecond"}, {"secret", AI_KEY}});
+                Logger::info("THREAD-" + std::to_string(worker) + "-" + std::to_string(entry), json{{"text", "first\nsecond"}, {"secret", CHAT_LLM_KEY}});
         });
     for(auto& thread : threads) thread.join();
     const auto logs = readText(log).substr(position);
@@ -236,7 +244,7 @@ static void concurrentLines(const std::filesystem::path& log)
     for(std::string line; std::getline(lines, line);)
     {
         require(count(line, "THREAD-") == 1, "并发写入混合多条日志");
-        require(line.find("first\\nsecond") != std::string::npos && line.find(AI_KEY) == std::string::npos, "并发JSON日志未紧凑转义或未脱敏");
+        require(line.find("first\\nsecond") != std::string::npos && line.find(CHAT_LLM_KEY) == std::string::npos, "并发JSON日志未紧凑转义或未脱敏");
     }
 }
 
@@ -252,12 +260,12 @@ static void serviceErrors(Services& services, const std::filesystem::path& log)
     require(logs.find("429") != std::string::npos && logs.find("1305") != std::string::npos && logs.find("judge-request-id") != std::string::npos, "判定HTTP错误缺少服务细节");
     services.clear("/judge");
 
-    services.set("/chat", 402, json{{"message", "account-balance-empty"}, {"request_id", "chat-request-id"}, {"key", AI_KEY}}.dump());
+    services.set("/chat", 402, json{{"message", "account-balance-empty"}, {"request_id", "chat-request-id"}, {"key", CHAT_LLM_KEY}}.dump());
     position = readText(log).size();
     deliver(bot, event("direct-failure-input", true));
     logs = readText(log).substr(position);
     oneWarning(logs, "account-balance-empty");
-    require(logs.find("402") != std::string::npos && logs.find("chat-request-id") != std::string::npos && logs.find(AI_KEY) == std::string::npos, "聊天HTTP错误缺少原因或泄露密钥");
+    require(logs.find("402") != std::string::npos && logs.find("chat-request-id") != std::string::npos && logs.find(CHAT_LLM_KEY) == std::string::npos, "聊天HTTP错误缺少原因或泄露密钥");
     services.clear("/chat");
 
     const std::vector<std::pair<std::string, std::string>> stream_errors = {
@@ -293,15 +301,11 @@ static void serviceErrors(Services& services, const std::filesystem::path& log)
     require(logs.find("1400") != std::string::npos && logs.find(SERVER_TOKEN) == std::string::npos, "NapCat业务错误详情缺失或泄露token");
     services.clear("/send_group_msg");
 
-    AI_MAX_CHAT_ROUNDS = 10;
-    services.set("/profile", 402, "{\"message\":\"profile-balance-error\"}");
-    services.set("/persona", 402, "{\"message\":\"persona-balance-error\"}");
     position = readText(log).size();
-    deliver(bot, event("summary-errors-input", true));
+    deliver(bot, event("removed-summary-input", true));
     logs = readText(log).substr(position);
-    require(count(logs, "[WARN]") == 2 && logs.find("profile-balance-error") != std::string::npos && logs.find("persona-balance-error") != std::string::npos, "画像与人格失败未分别记录或重复记录");
-    require(logs.find("画像") != std::string::npos && logs.find("人格") != std::string::npos, "总结操作名称不能区分");
-    AI_MAX_CHAT_ROUNDS = 100000;
+    require(logs.find("画像") == std::string::npos && logs.find("人格总结") == std::string::npos && logs.find("[WARN]") == std::string::npos,
+        "已停用总结仍执行或正常聊天产生告警");
 
     position = readText(log).size();
     deliver(bot, event("GROUP_MESSAGE_PRIVATE_MARKER", true));
@@ -320,30 +324,30 @@ static void decisionLogs(Services& services, const std::filesystem::path& log)
     size_t position = readText(log).size();
     deliver(bot, input);
     auto logs = readText(log).substr(position);
-    require(logs.find("AI 判定结果: ") != std::string::npos && logs.find("\"result\":\"NO\"") != std::string::npos &&
-        logs.find("AI 概率筛选: ") != std::string::npos && logs.find("\"matched\":false") != std::string::npos &&
+    require(logs.find("回复判定结果: ") != std::string::npos && logs.find("\"result\":\"NO\"") != std::string::npos &&
+        logs.find("Chat LLM 概率筛选: ") != std::string::npos && logs.find("\"matched\":false") != std::string::npos &&
         logs.find("\"probability\":0.0") != std::string::npos, "NO及概率未命中缺少INFO分流日志");
     require(logs.find("\"group\":\"123\"") != std::string::npos &&
         logs.find("\"message\":\"" + input.at("message_id").dump() + "\"") != std::string::npos,
         "分流日志缺少群号或触发消息ID");
     require(logs.find("DECISION_INPUT_PRIVATE_MARKER") == std::string::npos, "分流摘要泄露消息正文");
 
-    CHAT_REPLY_PROBABILITY = 1;
+    CHAT_LLM_REPLY_PROBABILITY = 1;
     services.set("/chat", 200, streamReply("[SILENT]"));
     position = readText(log).size();
     deliver(bot, event("probability-silent-input"));
     logs = readText(log).substr(position);
     require(logs.find("\"matched\":true") != std::string::npos && logs.find("\"probability\":1.0") != std::string::npos &&
-        logs.find("AI 概率聊天选择沉默: ") != std::string::npos && logs.find("NapCat 发送成功") == std::string::npos,
+        logs.find("Chat LLM 概率聊天选择沉默: ") != std::string::npos && logs.find("NapCat 发送成功") == std::string::npos,
         "概率命中后模型沉默的过程不可追踪");
     services.clear("/chat");
-    CHAT_REPLY_PROBABILITY = 0;
+    CHAT_LLM_REPLY_PROBABILITY = 0;
 
     services.set("/judge", 200, json{{"choices", json::array({{{"message", {{"content", "YES"}}}}})}}.dump());
     position = readText(log).size();
     deliver(bot, event("judge-yes-input"));
     logs = readText(log).substr(position);
-    require(logs.find("\"result\":\"YES\"") != std::string::npos && logs.find("AI 概率筛选: ") == std::string::npos &&
+    require(logs.find("\"result\":\"YES\"") != std::string::npos && logs.find("Chat LLM 概率筛选: ") == std::string::npos &&
         logs.find("NapCat 发送成功") != std::string::npos, "YES日志缺失或判定通过后错误进入概率筛选");
 
     services.set("/judge", 429, "{\"message\":\"decision-quota\"}");
@@ -351,14 +355,14 @@ static void decisionLogs(Services& services, const std::filesystem::path& log)
     deliver(bot, event("judge-error-input"));
     logs = readText(log).substr(position);
     oneWarning(logs, "decision-quota");
-    require(logs.find("AI 判定结果: ") == std::string::npos && logs.find("AI 概率筛选: ") != std::string::npos &&
+    require(logs.find("回复判定结果: ") == std::string::npos && logs.find("Chat LLM 概率筛选: ") != std::string::npos &&
         logs.find("\"matched\":false") != std::string::npos, "判定失败伪造成功标签或缺少概率结果");
 
     position = readText(log).size();
     deliver(bot, event("direct-input", true));
     logs = readText(log).substr(position);
-    require(logs.find("AI 直接唤醒: ") != std::string::npos && logs.find("\"reason\":\"at\"") != std::string::npos &&
-        logs.find("AI 判定结果: ") == std::string::npos && logs.find("AI 概率筛选: ") == std::string::npos &&
+    require(logs.find("Chat LLM 直接唤醒: ") != std::string::npos && logs.find("\"reason\":\"at\"") != std::string::npos &&
+        logs.find("回复判定结果: ") == std::string::npos && logs.find("Chat LLM 概率筛选: ") == std::string::npos &&
         logs.find("[WARN]") == std::string::npos, "直接唤醒缺少原因日志或错误经过判定和概率");
     services.clear("/judge");
 }
