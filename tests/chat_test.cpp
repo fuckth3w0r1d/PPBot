@@ -56,6 +56,23 @@ static void eventually(Predicate predicate, const std::string& message)
     require(false, message);
 }
 
+static std::string streamReply(const std::string& content)
+{
+    std::string result = ": heartbeat\r\n\r\n";
+    const auto append = [&](const json& value) { result += "data: " + value.dump() + "\r\n\r\n"; };
+    append({{"choices", json::array({{{"index", 0}, {"delta", {{"role", "assistant"}, {"content", nullptr}, {"reasoning_content", "HIDDEN_REASONING_MARKER"}}}}})}});
+    for (size_t offset = 0; offset < content.size();)
+    {
+        size_t end = std::min(offset + 12, content.size());
+        while (end < content.size() && (static_cast<unsigned char>(content[end]) & 0xc0) == 0x80) ++end;
+        append({{"choices", json::array({{{"index", 0}, {"delta", {{"content", content.substr(offset, end - offset)}}}}})}});
+        offset = end;
+    }
+    append({{"choices", json::array({{{"index", 0}, {"delta", json::object()}, {"finish_reason", "stop"}}})}});
+    append({{"choices", json::array()}, {"usage", {{"total_tokens", 99}}}});
+    return result + "data: [DONE]\r\n\r\n";
+}
+
 class Services {
     httplib::Server server;
     std::thread worker;
@@ -71,6 +88,7 @@ class Services {
     std::string profile_result = "UPDATED_PROFILE_MARKER";
     bool summary_invalid = false;
     bool summary_empty = false;
+    bool summary_incomplete = false;
     bool judge_invalid = false;
     bool chat_invalid = false;
     bool send_failure = false;
@@ -82,6 +100,14 @@ class Services {
     bool release_chat = false;
     int judge_delay_ms = 0;
     int next_id = 5000;
+    std::string stream_override;
+    bool disconnect_stream = false;
+    int stream_delay_ms = 0;
+    bool block_stream = false;
+    bool stream_entered = false;
+    bool release_stream = false;
+    size_t fragment_size = 0;
+    int fragment_delay_ms = 1;
 
 public:
     int port;
@@ -94,7 +120,10 @@ public:
             int delay;
             {
                 std::lock_guard<std::mutex> lock(mutex);
-                judge_requests.push_back(json::parse(request.body));
+                const auto body = json::parse(request.body);
+                require(!body.value("stream", false), "判定请求错误启用流式");
+                require(body.value("thinking", json::object()) == json{{"type", "disabled"}}, "判定请求未关闭思考模式");
+                judge_requests.push_back(body);
                 result = judge_result;
                 invalid = judge_invalid;
                 delay = judge_delay_ms;
@@ -105,7 +134,10 @@ public:
         });
         server.Post("/chat", [this](const httplib::Request& request, httplib::Response& response) {
             std::unique_lock<std::mutex> lock(mutex);
-            chat_requests.push_back(json::parse(request.body));
+            const auto body = json::parse(request.body);
+            require(body.value("stream", false), "主模型请求未启用流式");
+            require(!body.contains("thinking"), "主模型请求携带了判定专用思考参数");
+            chat_requests.push_back(body);
             if (block_chat)
             {
                 chat_entered = true;
@@ -119,10 +151,50 @@ public:
             const std::string result = (persona || profile) && summary_empty ? "" : persona ? persona_result : profile ? profile_result : chat_result;
             const bool invalid = persona || profile ? summary_invalid : chat_invalid;
             const int status = persona || profile ? 200 : chat_status;
+            std::string data = invalid ? "data: not-json\r\n\r\ndata: [DONE]\r\n\r\n" : streamReply(result);
+            const bool summary = persona || profile;
+            if (!summary && !stream_override.empty()) data = stream_override;
+            if (summary && summary_incomplete)
+            {
+                data = streamReply("INCOMPLETE_" + result);
+                data.erase(data.find("data: [DONE]"));
+            }
+            const bool disconnect = !summary && disconnect_stream;
+            const int delay = summary ? 0 : stream_delay_ms;
+            const bool pause = !summary && block_stream;
+            const size_t fragment = summary ? 0 : fragment_size;
+            const int interval = fragment_delay_ms;
             lock.unlock();
             response.status = status;
-            if (invalid) response.set_content("not-json", "text/plain");
-            else response.set_content(json{{"choices", json::array({{{"message", {{"content", result}}}}})}}.dump(), "application/json");
+            if (status != 200)
+            {
+                response.set_content(result, "application/json");
+                return;
+            }
+            response.set_chunked_content_provider("text/event-stream",
+                [this, data, disconnect, delay, pause, fragment, interval](size_t, httplib::DataSink& sink) {
+                    const auto done = data.find("data: [DONE]");
+                    const size_t split = (pause || delay) && done != std::string::npos ? done : data.size();
+                    const size_t step = fragment ? fragment : std::max<size_t>(1, split);
+                    for (size_t offset = 0; offset < split; offset += step)
+                    {
+                        if (!sink.write(data.data() + offset, std::min(step, split - offset))) return false;
+                        if (fragment) std::this_thread::sleep_for(std::chrono::milliseconds(interval));
+                    }
+                    if (pause)
+                    {
+                        std::unique_lock<std::mutex> stream_lock(mutex);
+                        stream_entered = true;
+                        condition.notify_all();
+                        condition.wait(stream_lock, [this] { return release_stream; });
+                        block_stream = false;
+                    }
+                    if (delay) std::this_thread::sleep_for(std::chrono::milliseconds(delay));
+                    if (disconnect) return false;
+                    if (split < data.size() && !sink.write(data.data() + split, data.size() - split)) return false;
+                    sink.done();
+                    return true;
+                });
         });
         const auto send = [this](const httplib::Request& request, httplib::Response& response) {
             std::lock_guard<std::mutex> lock(mutex);
@@ -149,6 +221,7 @@ public:
         {
             std::lock_guard<std::mutex> lock(mutex);
             release_chat = true;
+            release_stream = true;
             condition.notify_all();
         }
         server.stop();
@@ -171,17 +244,49 @@ public:
         chat_status = status;
     }
 
+    void stream(const std::string& data = "", size_t fragment = 0, bool disconnect = false, int delay = 0, int interval = 1)
+    {
+        std::lock_guard<std::mutex> lock(mutex);
+        stream_override = data;
+        fragment_size = fragment;
+        disconnect_stream = disconnect;
+        stream_delay_ms = delay;
+        fragment_delay_ms = interval;
+    }
+
+    void pauseStream()
+    {
+        std::lock_guard<std::mutex> lock(mutex);
+        block_stream = true;
+        stream_entered = false;
+        release_stream = false;
+    }
+
+    void awaitStream()
+    {
+        std::unique_lock<std::mutex> lock(mutex);
+        require(condition.wait_for(lock, 5s, [this] { return stream_entered; }), "流式响应未进入可控阻塞点");
+    }
+
+    void unblockStream()
+    {
+        std::lock_guard<std::mutex> lock(mutex);
+        release_stream = true;
+        condition.notify_all();
+    }
+
     void failSend(bool fail)
     {
         std::lock_guard<std::mutex> lock(mutex);
         send_failure = fail;
     }
 
-    void summariesInvalid(bool invalid, bool empty = false)
+    void summariesInvalid(bool invalid, bool empty = false, bool incomplete = false)
     {
         std::lock_guard<std::mutex> lock(mutex);
         summary_invalid = invalid;
         summary_empty = empty;
+        summary_incomplete = incomplete;
     }
 
     void pokeResponse(int status = 200, const json& result = {{"status", "ok"}, {"retcode", 0}, {"data", nullptr}})
@@ -374,9 +479,9 @@ static void routingAndHistory(Services& services)
     sends = services.sends().size();
     const auto empty_mention = event(json::array({at("42")}));
     deliver(bot, empty_mention);
-    require(services.sends().size() == sends + 1, "仅@未返回输入提示");
+    require(services.sends().size() == sends + 1, "仅@未收到聊天回复");
     replyForm(services.sends().back(), empty_mention.at("message_id").dump());
-    require(services.judges().size() == judges && services.chats().size() == chats, "仅@调用模型");
+    require(services.judges().size() == judges && services.chats().size() == ++chats, "仅@未直接进入聊天");
     deliver(bot, event(json::array({{{"type", "image"}, {"data", {{"url", "IMAGE_ONLY_MARKER"}}}}})));
     ++judges;
     deliver(bot, event(json::array({{{"type", "record"}, {"data", {{"file", "VOICE_ONLY_MARKER"}}}}})));
@@ -486,6 +591,16 @@ static void routingAndHistory(Services& services)
     require(services.chats().size() == ++chats, "判定网络失败概率1未触发聊天");
     deliver(bot, event(json::array({at("42"), text("DIRECT_WITH_JUDGE_DOWN")})));
     require(services.chats().size() == ++chats && services.judges().size() == judges, "判定不可用阻塞直接唤醒");
+    const auto referenced_bot = services.lastMessageId();
+    for (const auto& segments : {json::array({at(42)}), json::array({reply(referenced_bot)}),
+            json::array({at("42"), {{"type", "record"}, {"data", {{"file", "DIRECT_VOICE"}}}}})})
+    {
+        const auto direct_empty = event(segments);
+        deliver(bot, direct_empty);
+        require(services.chats().size() == ++chats && services.judges().size() == judges,
+            "判定不可用时空@、空引用或无正文媒体未直接聊天");
+        replyForm(services.sends().back(), segments.front().at("type") == "at" ? direct_empty.at("message_id").dump() : "");
+    }
     JUDGE_HOST = judge_host;
     CHAT_REPLY_PROBABILITY = 0;
 
@@ -986,16 +1101,111 @@ static void summaries(Services& services, const std::filesystem::path& root)
             return readJson(root / "data/AiModule/persona_map.json").dump().find("UPDATED_PERSONA_MARKER") != std::string::npos &&
                 readJson(root / "data/AiModule/users_profile_map.json").dump().find("UPDATED_PROFILE_MARKER") != std::string::npos;
         }, "总结结果未保存");
-        for (bool invalid : {true, false})
+        for (int failure = 0; failure < 3; ++failure)
         {
-            services.summariesInvalid(invalid, !invalid);
+            services.summariesInvalid(failure == 0, failure == 1, failure == 2);
             deliver(bot, event(json::array({at("42"), text("SUMMARY_FAILURE_CHECK")}), 777, 7));
             const std::string messages = services.chats().back().at("messages").dump();
-            require(messages.find("UPDATED_PERSONA_MARKER") != std::string::npos && messages.find("UPDATED_PROFILE_MARKER") != std::string::npos, "总结失败或空结果覆盖已有群人格或成员画像");
+            require(messages.find("UPDATED_PERSONA_MARKER") != std::string::npos && messages.find("UPDATED_PROFILE_MARKER") != std::string::npos &&
+                messages.find("INCOMPLETE_UPDATED_") == std::string::npos, "总结失败、空结果或不完整流覆盖已有群人格或成员画像");
+            eventually([&] {
+                const auto sessions = readJson(root / "data/AiModule/session_round_counter.json").at("session_round_counter");
+                const auto groups = readJson(root / "data/AiModule/group_round_counter.json").at("group_round_counter");
+                return sessions.at("group_777_user_7") == failure + 2 && groups.at("777") == failure + 2;
+            }, "总结失败清除了待总结计数");
         }
         services.summariesInvalid(false);
+        deliver(bot, event(json::array({at("42"), text("SUMMARY_RETRY_SUCCESS")}), 777, 7));
+        eventually([&] {
+            return readJson(root / "data/AiModule/session_round_counter.json").at("session_round_counter").at("group_777_user_7") == 1 &&
+                readJson(root / "data/AiModule/group_round_counter.json").at("group_round_counter").at("777") == 1;
+        }, "完整有效总结未消耗已有待总结计数");
     }
     AI_MAX_CHAT_ROUNDS = 100000;
+}
+
+static void streamingLifecycle(Services& services)
+{
+    BotServer bot;
+    const auto judges = services.judges().size();
+    const auto timeout = AI_TIMEOUT_SECONDS;
+    services.chat("DEFAULT_STREAM_REPLY");
+    const std::string fragmented = ": heartbeat\r\n\r\nevent: message\r\n"
+        "data: {\"choices\":\r\ndata: [{\"index\":0,\"delta\":{\"content\":\"中文正文\"}}]}\r\n\r\n"
+        "data: {\"choices\":[{\"index\":0,\"delta\":{\"reasoning_content\":\"HIDDEN_STREAM_REASONING\"}}]}\n\n"
+        "data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"尾声\"}}]}\r\r"
+        "data: {\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}]}\r\n\r\n"
+        "data: {\"choices\":[],\"usage\":{\"total_tokens\":123}}\r\n\r\n"
+        "data: [DONE]\r\n\r\n";
+    services.stream(fragmented, 1);
+    size_t sends = services.sends().size();
+    size_t chats = services.chats().size();
+    deliver(bot, event(json::array({at("42"), text("FRAGMENTED_STREAM_INPUT")}), 1101));
+    require(services.chats().size() == ++chats && services.sends().size() == sends + 1 &&
+        services.sends().back().at("message").back().at("data").at("text") == "中文正文尾声",
+        "跨字节分片、多行data或不同换行的SSE未按正文顺序聚合");
+
+    services.stream();
+    for (bool action : {false, true})
+    {
+        services.chat(action ? json{{"text", "COMPLETE_POKE_BEFORE_DONE"}, {"poke", true}}.dump() : "COMPLETE_TEXT_BEFORE_DONE");
+        services.pauseStream();
+        sends = services.sends().size();
+        const auto pokes = services.pokes().size();
+        auto delivery = std::async(std::launch::async, [&] {
+            deliver(bot, action ? poke(1102) : event(json::array({at("42"), text("WAIT_FOR_STREAM_DONE")}), 1102));
+        });
+        services.awaitStream();
+        const bool no_early_output = services.sends().size() == sends && services.pokes().size() == pokes &&
+            delivery.wait_for(0ms) == std::future_status::timeout;
+        services.unblockStream();
+        delivery.get();
+        require(no_early_output, "正文和拍决策在流完整结束前产生出站行为");
+        require(services.sends().size() == sends + 1 && services.pokes().size() == pokes + (action ? 1 : 0),
+            "完整流结束后没有按聚合结果发送文字或回拍");
+        ++chats;
+    }
+
+    std::string incomplete = streamReply("HALF_STREAM_PRIVATE_MARKER");
+    incomplete.erase(incomplete.find("data: [DONE]"));
+    for (int fault = 0; fault < 5; ++fault)
+    {
+        const std::string data = fault == 3 ? incomplete + "data: {bad-json}\r\n\r\ndata: [DONE]\r\n\r\n" :
+            fault == 4 ? incomplete + "data: [DONE]" : incomplete;
+        services.stream(data, 0, fault == 1, fault == 2 ? 1200 : 0);
+        AI_TIMEOUT_SECONDS = fault == 2 ? 1 : timeout;
+        services.judge("YES");
+        for (int kind = 0; kind < 3; ++kind)
+        {
+            sends = services.sends().size();
+            const auto pokes = services.pokes().size();
+            deliver(bot, kind == 2 ? poke(1103) : event(kind == 0 ? json::array({at("42"), text("FAILED_STREAM_DIRECT")}) :
+                json::array({text("FAILED_STREAM_ORDINARY")}), 1103));
+            require(services.chats().size() == ++chats && services.sends().size() == sends + (kind == 1 ? 0 : 1) &&
+                services.pokes().size() == pokes, "流失败产生半截结果、重复请求或回拍");
+            if (kind != 1)
+                require(services.sends().back().at("message").back().at("data").at("text") == "暂时无法获取回复，请稍后再试。",
+                    "流失败未沿用直接唤醒失败提示");
+        }
+    }
+    AI_TIMEOUT_SECONDS = 1;
+    const auto slow_stream = streamReply("TOTAL_TIMEOUT_PRIVATE_MARKER");
+    services.stream(slow_stream, slow_stream.size() / 8, false, 0, 200);
+    sends = services.sends().size();
+    deliver(bot, event(json::array({at("42"), text("CONTINUOUS_STREAM_TOTAL_TIMEOUT")}), 1103));
+    require(services.chats().size() == ++chats && services.sends().size() == sends + 1 &&
+        services.sends().back().at("message").back().at("data").at("text") == "暂时无法获取回复，请稍后再试。",
+        "持续收到分片时请求总超时未生效");
+    AI_TIMEOUT_SECONDS = timeout;
+    services.stream();
+    services.judge("NO");
+    services.chat("AFTER_INCOMPLETE_STREAM");
+    deliver(bot, event(json::array({at("42"), text("CHECK_INCOMPLETE_STREAM_HISTORY")}), 1103));
+    const auto after_failure = services.chats().back().at("messages").dump();
+    require(after_failure.find("HALF_STREAM_PRIVATE_MARKER") == std::string::npos &&
+        after_failure.find("TOTAL_TIMEOUT_PRIVATE_MARKER") == std::string::npos,
+        "失败流的半截正文被记录为成功出站历史");
+    require(services.judges().size() == judges + 5, "流式直接唤醒错误调用判定或判定被重试");
 }
 
 static void legacyEmptyAndDamaged(const std::filesystem::path& root)
@@ -1053,6 +1263,8 @@ int main()
         windowBudgetAndConcurrency(services);
         std::cout << "窗口、输入预算、并发收集通过\n";
         persistenceWithoutAi(services, root);
+        streamingLifecycle(services);
+        std::cout << "流式分片、完整性、失败及延迟出站通过\n";
         summaries(services, root);
         legacyEmptyAndDamaged(root);
         require(readJson(data / "session_memory.json") == legacy, "旧个人历史文件被修改");

@@ -36,6 +36,13 @@ static void oneWarning(const std::string& logs, const std::string& reason)
     require(logs.find("判定结果无效") == std::string::npos, "已记录的判定失败产生重复告警");
 }
 
+static std::string streamReply(const std::string& content, const std::string& finish = "stop")
+{
+    return "data: " + json{{"choices", json::array({{{"index", 0}, {"delta", {{"content", content}}}}})}}.dump() + "\n\n" +
+        "data: " + json{{"choices", json::array({{{"index", 0}, {"delta", json::object()}, {"finish_reason", finish}}})}}.dump() +
+        "\n\ndata: [DONE]\n\n";
+}
+
 class Services {
     struct Result { int status; std::string body; };
     httplib::Server server;
@@ -53,21 +60,33 @@ public:
             if(path == "/chat")
             {
                 const auto body = json::parse(request.body);
+                require(body.value("stream", false), "日志验收主模型未使用流式请求");
+                require(!body.contains("thinking"), "日志验收主模型携带了判定专用思考参数");
                 const auto instructions = body.at("messages").at(0).at("content").get<std::string>();
                 if(instructions.find("用户画像总结器") != std::string::npos) path = "/profile";
                 if(instructions.find("群人格总结器") != std::string::npos) path = "/persona";
+            }
+            if(path == "/judge")
+            {
+                const auto body = json::parse(request.body);
+                require(!body.value("stream", false), "日志验收判定错误使用流式请求");
+                require(body.value("thinking", json::object()) == json{{"type", "disabled"}}, "日志验收判定未关闭思考模式");
             }
             std::lock_guard<std::mutex> lock(mutex);
             const auto result = results.find(path);
             if(result != results.end())
             {
                 response.status = result->second.status;
-                response.set_content(result->second.body, "application/json");
+                response.set_content(result->second.body, result->second.body.rfind("data:", 0) == 0 ? "text/event-stream" : "application/json");
             }
             else if(path == "/send_group_msg")
                 response.set_content(json{{"status", "ok"}, {"retcode", 0}, {"data", {{"message_id", ++message_id}}}}.dump(), "application/json");
+            else if(path == "/judge")
+            {
+                response.set_content(json{{"choices", json::array({{{"message", {{"content", "NO"}}}}})}}.dump(), "application/json");
+            }
             else
-                response.set_content(json{{"choices", json::array({{{"message", {{"content", path == "/judge" ? "NO" : "BOT_REPLY_PRIVATE_MARKER"}}}}})}}.dump(), "application/json");
+                response.set_content(streamReply("BOT_REPLY_PRIVATE_MARKER"), "text/event-stream");
         };
         server.Post("/.*", handle);
         server.Get("/.*", handle);
@@ -241,6 +260,22 @@ static void serviceErrors(Services& services, const std::filesystem::path& log)
     require(logs.find("402") != std::string::npos && logs.find("chat-request-id") != std::string::npos && logs.find(AI_KEY) == std::string::npos, "聊天HTTP错误缺少原因或泄露密钥");
     services.clear("/chat");
 
+    const std::vector<std::pair<std::string, std::string>> stream_errors = {
+        {"{}", "响应不是流式事件"},
+        {"data: invalid-json\n\ndata: [DONE]\n\n", "流式事件不是合法 JSON"},
+        {"data: {\"choices\":[{\"delta\":{\"content\":\"INCOMPLETE_PRIVATE_MARKER\"}}]}\n\n", "流未完整结束"},
+        {streamReply(""), "模型内容为空"},
+        {streamReply("LENGTH_REPLY_PRIVATE_MARKER", "length"), "输出被截断 finish_reason=length"}
+    };
+    for(const auto& [body, reason] : stream_errors)
+    {
+        services.set("/chat", 200, body);
+        position = readText(log).size();
+        deliver(bot, event("stream-error-input", true));
+        oneWarning(readText(log).substr(position), reason);
+    }
+    services.clear("/chat");
+
     for(const auto& body : {std::string("not-json\nplain-error"), std::string("<html>gateway-error</html>"), std::string("{}")})
     {
         services.set("/judge", 200, body);
@@ -276,6 +311,56 @@ static void serviceErrors(Services& services, const std::filesystem::path& log)
     position = readText(log).size();
     deliver(bot, event("ordinary-silent-message"));
     require(readText(log).substr(position).find("[WARN]") == std::string::npos, "正常沉默被当作错误");
+}
+
+static void decisionLogs(Services& services, const std::filesystem::path& log)
+{
+    BotServer bot;
+    const auto input = event("DECISION_INPUT_PRIVATE_MARKER");
+    size_t position = readText(log).size();
+    deliver(bot, input);
+    auto logs = readText(log).substr(position);
+    require(logs.find("AI 判定结果: ") != std::string::npos && logs.find("\"result\":\"NO\"") != std::string::npos &&
+        logs.find("AI 概率筛选: ") != std::string::npos && logs.find("\"matched\":false") != std::string::npos &&
+        logs.find("\"probability\":0.0") != std::string::npos, "NO及概率未命中缺少INFO分流日志");
+    require(logs.find("\"group\":\"123\"") != std::string::npos &&
+        logs.find("\"message\":\"" + input.at("message_id").dump() + "\"") != std::string::npos,
+        "分流日志缺少群号或触发消息ID");
+    require(logs.find("DECISION_INPUT_PRIVATE_MARKER") == std::string::npos, "分流摘要泄露消息正文");
+
+    CHAT_REPLY_PROBABILITY = 1;
+    services.set("/chat", 200, streamReply("[SILENT]"));
+    position = readText(log).size();
+    deliver(bot, event("probability-silent-input"));
+    logs = readText(log).substr(position);
+    require(logs.find("\"matched\":true") != std::string::npos && logs.find("\"probability\":1.0") != std::string::npos &&
+        logs.find("AI 概率聊天选择沉默: ") != std::string::npos && logs.find("NapCat 发送成功") == std::string::npos,
+        "概率命中后模型沉默的过程不可追踪");
+    services.clear("/chat");
+    CHAT_REPLY_PROBABILITY = 0;
+
+    services.set("/judge", 200, json{{"choices", json::array({{{"message", {{"content", "YES"}}}}})}}.dump());
+    position = readText(log).size();
+    deliver(bot, event("judge-yes-input"));
+    logs = readText(log).substr(position);
+    require(logs.find("\"result\":\"YES\"") != std::string::npos && logs.find("AI 概率筛选: ") == std::string::npos &&
+        logs.find("NapCat 发送成功") != std::string::npos, "YES日志缺失或判定通过后错误进入概率筛选");
+
+    services.set("/judge", 429, "{\"message\":\"decision-quota\"}");
+    position = readText(log).size();
+    deliver(bot, event("judge-error-input"));
+    logs = readText(log).substr(position);
+    oneWarning(logs, "decision-quota");
+    require(logs.find("AI 判定结果: ") == std::string::npos && logs.find("AI 概率筛选: ") != std::string::npos &&
+        logs.find("\"matched\":false") != std::string::npos, "判定失败伪造成功标签或缺少概率结果");
+
+    position = readText(log).size();
+    deliver(bot, event("direct-input", true));
+    logs = readText(log).substr(position);
+    require(logs.find("AI 直接唤醒: ") != std::string::npos && logs.find("\"reason\":\"at\"") != std::string::npos &&
+        logs.find("AI 判定结果: ") == std::string::npos && logs.find("AI 概率筛选: ") == std::string::npos &&
+        logs.find("[WARN]") == std::string::npos, "直接唤醒缺少原因日志或错误经过判定和概率");
+    services.clear("/judge");
 }
 
 static void commandsAndFiles(Services& services, const std::filesystem::path& log, const std::filesystem::path& root)
@@ -322,6 +407,7 @@ int main()
         formatter(log);
         concurrentLines(log);
         serviceErrors(services, log);
+        decisionLogs(services, log);
         commandsAndFiles(services, log, root);
         std::filesystem::remove_all(root);
         std::cout << "日志格式、错误细节、脱敏、并发及业务边界验收通过\n";
