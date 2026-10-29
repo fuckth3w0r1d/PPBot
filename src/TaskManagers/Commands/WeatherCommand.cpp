@@ -50,7 +50,7 @@ std::string WeatherCommand::askAmap(const std::string& args)
     std::string city = getCityName(args);
     if(city.empty())
     {
-        return "请输入城市名称, 格式: 天气 城市名称";
+        return "请输入城市名称, 格式: @机器人 /天气 城市名称";
     }
     httplib::SSLClient cli(AMAP_HOST, AMAP_PORT);
     auto res = cli.Get(AMAP_GET_PATH + "?city=" + city + "&key=" + AMAP_KEY);
@@ -70,7 +70,7 @@ std::string WeatherCommand::askAmap(const std::string& args)
         if(raw_data.at("status") != "1" || raw_data.at("lives").empty())
         {
             Logger::httpError("天气查询", res->status, res->body, "天气查询失败或城市不存在");
-            return "天气查询失败, 请输入正确的格式: 天气 城市名称\n暂时只支持国内城市";
+            return "天气查询失败, 请输入正确的格式: @机器人 /天气 城市名称\n暂时只支持国内城市";
         }
         const auto winfo = getWeatherinfo(raw_data);
         std::string result = "城市: " + winfo.city;

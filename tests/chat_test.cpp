@@ -14,6 +14,8 @@
 #include <thread>
 #include <ctime>
 #include <random>
+#include <cstdlib>
+#include <openssl/x509v3.h>
 
 using namespace std::chrono_literals;
 
@@ -129,12 +131,18 @@ static std::string streamReply(const std::string& content)
 class Services {
     httplib::Server server;
     std::thread worker;
+    std::unique_ptr<httplib::SSLServer> secure_server;
+    std::thread secure_worker;
     std::mutex mutex;
     std::condition_variable condition;
     std::vector<json> judge_requests;
     std::vector<json> chat_requests;
     std::vector<json> sent_requests;
     std::vector<json> poke_requests;
+    std::vector<json> command_requests;
+    bool command_failure = false;
+    std::string previous_ca;
+    bool had_ca = false;
     std::string judge_result = "NO";
     std::string chat_result = "CHAT_DEFAULT";
     bool judge_invalid = false;
@@ -159,6 +167,7 @@ class Services {
 
 public:
     int port;
+    int secure_port;
 
     Services()
     {
@@ -262,6 +271,9 @@ public:
             response.status = poke_status;
             response.set_content(poke_result.dump(), "application/json");
         });
+        server.Get("/command/.*", [this](const httplib::Request& request, httplib::Response& response) {
+            command(request, response);
+        });
         port = server.bind_to_any_port("127.0.0.1");
         require(port > 0, "本地模拟服务无法绑定端口");
         worker = std::thread([this] { server.listen_after_bind(); });
@@ -278,7 +290,77 @@ public:
         }
         server.stop();
         if (worker.joinable()) worker.join();
+        if (secure_server)
+        {
+            secure_server->stop();
+            if (secure_worker.joinable()) secure_worker.join();
+            if (had_ca) setenv("SSL_CERT_FILE", previous_ca.c_str(), 1);
+            else unsetenv("SSL_CERT_FILE");
+        }
     }
+
+    void command(const httplib::Request& request, httplib::Response& response)
+    {
+        std::lock_guard<std::mutex> lock(mutex);
+        command_requests.push_back({{"path", request.path}, {"city", request.get_param_value("city")},
+            {"keywords", request.get_param_value("keywords")}, {"tag", request.get_param_value("tag")}});
+        json result;
+        if (command_failure) result = {{"status", "0"}};
+        else if (request.path == "/command/weather") result = {{"status", "1"}, {"lives", json::array({{
+            {"province", "北京"}, {"city", "北京"}, {"weather", "晴"}, {"temperature", "20"},
+            {"winddirection", "东"}, {"windpower", "2"}, {"humidity", "50"}, {"reporttime", "test-time"}}})}};
+        else if (request.path == "/command/meal") result = {{"mealwhat", "MEAL_RESULT"}};
+        else if (request.path == "/command/image") result = {{"url", "https://example.com/one.png"}};
+        else if (request.path == "/command/images") result = {{"proxyUrls", json::array({"https://example.com/two.png", "https://example.com/three.png"})}};
+        else if (request.path == "/command/music-search") result = {{"result", {{"songs", json::array({{{"id", 321}}})}}}};
+        else result = {{"data", json::array({{{"url", "https://example.com/song.mp3"}}})}};
+        response.set_content(result.dump(), "application/json");
+    }
+
+    void secureCommands(const std::filesystem::path& root)
+    {
+        const auto certificate_path = (root / "command-ca.pem").string();
+        secure_server = std::make_unique<httplib::SSLServer>([&](SSL_CTX& context) {
+            std::unique_ptr<EVP_PKEY, decltype(&EVP_PKEY_free)> key(EVP_PKEY_Q_keygen(nullptr, nullptr, "RSA", 2048), EVP_PKEY_free);
+            std::unique_ptr<X509, decltype(&X509_free)> certificate(X509_new(), X509_free);
+            require(key && certificate, "无法生成测试证书");
+            require(X509_set_version(certificate.get(), 2) && ASN1_INTEGER_set(X509_get_serialNumber(certificate.get()), 1) &&
+                X509_gmtime_adj(X509_getm_notBefore(certificate.get()), -60) &&
+                X509_gmtime_adj(X509_getm_notAfter(certificate.get()), 3600) && X509_set_pubkey(certificate.get(), key.get()),
+                "无法初始化测试证书");
+            auto name = X509_get_subject_name(certificate.get());
+            require(X509_NAME_add_entry_by_txt(name, "CN", MBSTRING_ASC,
+                reinterpret_cast<const unsigned char*>("127.0.0.1"), -1, -1, 0) && X509_set_issuer_name(certificate.get(), name),
+                "无法设置测试证书名称");
+            for (const auto& extension : {std::make_pair(NID_subject_alt_name, "IP:127.0.0.1"), std::make_pair(NID_basic_constraints, "critical,CA:TRUE")})
+            {
+                std::unique_ptr<X509_EXTENSION, decltype(&X509_EXTENSION_free)> value(
+                    X509V3_EXT_conf_nid(nullptr, nullptr, extension.first, const_cast<char*>(extension.second)), X509_EXTENSION_free);
+                require(value && X509_add_ext(certificate.get(), value.get(), -1), "无法设置测试证书扩展");
+            }
+            require(X509_sign(certificate.get(), key.get(), EVP_sha256()) > 0 &&
+                SSL_CTX_use_certificate(&context, certificate.get()) && SSL_CTX_use_PrivateKey(&context, key.get()),
+                "无法签发测试证书");
+            std::unique_ptr<BIO, decltype(&BIO_free)> output(BIO_new_file(certificate_path.c_str(), "w"), BIO_free);
+            require(output && PEM_write_bio_X509(output.get(), certificate.get()), "无法保存测试证书");
+            return true;
+        });
+        require(secure_server->is_valid(), "HTTPS 模拟服务初始化失败");
+        const char* original = std::getenv("SSL_CERT_FILE");
+        had_ca = original != nullptr;
+        if (original) previous_ca = original;
+        require(setenv("SSL_CERT_FILE", certificate_path.c_str(), 1) == 0, "无法信任测试证书");
+        secure_server->Get("/command/.*", [this](const httplib::Request& request, httplib::Response& response) {
+            command(request, response);
+        });
+        secure_port = secure_server->bind_to_any_port("127.0.0.1");
+        require(secure_port > 0, "HTTPS 模拟服务无法绑定端口");
+        secure_worker = std::thread([this] { secure_server->listen_after_bind(); });
+        eventually([this] { return secure_server->is_running(); }, "HTTPS 模拟服务未启动");
+    }
+
+    void failCommand(bool fail) { std::lock_guard<std::mutex> lock(mutex); command_failure = fail; }
+    std::vector<json> commands() { std::lock_guard<std::mutex> lock(mutex); return command_requests; }
 
     void judge(const std::string& result, bool invalid = false, int delay = 0)
     {
@@ -544,14 +626,187 @@ static void configuration(const std::filesystem::path& root)
     require(rejected, "超出范围的插话概率未拒绝");
 }
 
+static void commandRouting(Services& services, const std::filesystem::path& root)
+{
+    services.secureCommands(root);
+    AMAP_HOST = EAT_HOST = RANDOM_IMG_HOST = "127.0.0.1";
+    AMAP_PORT = EAT_PORT = RANDOM_IMG_PORT = services.secure_port;
+    AMAP_GET_PATH = "/command/weather";
+    EAT_GET_PATH = "/command/meal";
+    RANDOM_IMG_GET_PATH = "/command/image";
+    RANDOM_IMG_HOST2 = MUSIC_HOST = "127.0.0.1";
+    RANDOM_IMG_PORT2 = MUSIC_PORT = services.port;
+    RANDOM_IMG_GET_PATH2 = "/command/images";
+    MUSIC_GET_ID_PATH = "/command/music-search";
+    MUSIC_GET_URL_PATH = "/command/music-url";
+    services.judge("NO");
+    services.chat("COMMAND_CHAT_FALLTHROUGH");
+    CmdTaskManager commands;
+    BotServer bot;
+    const auto invoke = [&](const json& segments) {
+        const auto judges = services.judges().size();
+        const auto chats = services.chats().size();
+        const auto sends = services.sends().size();
+        deliver(bot, event(segments, 700));
+        require(services.judges().size() == judges && services.chats().size() == chats, "合法命令请求了模型");
+        require(services.sends().size() == sends + 1, "合法命令未发送一条回复");
+        return services.sends().back();
+    };
+    const auto help = invoke(json::array({at("42"), text(" /帮助")}));
+    const auto help_text = help.at("message").at(0).at("data").at("text").get<std::string>();
+    require(help.at("message").size() == 1 && help_text.find("显式 @ 本机器人") != std::string::npos &&
+        help_text.find("@机器人 /命令 参数") != std::string::npos, "帮助未说明新格式或改变了回复形式");
+    for (const auto& name : {"帮助", "时间", "天气", "吃啥", "随机二次元图片", "来点涩图", "点歌"})
+        require(occurrences(help_text, std::string("/") + name) == 1, "帮助列表缺少命令或重复命令");
+    const auto help_id = services.lastMessageId();
+    for (const auto& segments : {
+        json::array({at("42"), text("/时间")}),
+        json::array({text("/时间 "), at("42")}),
+        json::array({text("    /时间"), at(42)}),
+        json::array({at("42"), text(" /时"), image("https://example.com/input.png"), text("间")}),
+        json::array({text(" /时"), at("42"), text("间")}),
+        json::array({reply(help_id), text("/时间"), at("42")})})
+    {
+        const auto result = invoke(segments);
+        require(result.at("message").size() == 1 && result.at("message").at(0).at("type") == "text" &&
+            result.at("message").at(0).at("data").at("text").get<std::string>() != "COMMAND_CHAT_FALLTHROUGH",
+            "@ 位置或文本合并导致时间命令进入聊天");
+    }
+    const json card = {{"meta", {{"detail_1", {{"appid", B23_APPID}, {"qqdocurl", "invalid-short-link"}}}}}};
+    const auto priority = invoke(json::array({at("42"), text("/时间"),
+        {{"type", "json"}, {"data", {{"data", card.dump()}}}}}));
+    require(priority.at("message").size() == 1 && priority.at("message").at(0).at("type") == "text" &&
+        priority.dump().find("COMMAND_CHAT_FALLTHROUGH") == std::string::npos && priority.dump().find("失败") == std::string::npos,
+        "合法命令未优先于 B 站卡片");
+
+    for (const auto& segments : {
+        json::array({text("时间")}), json::array({text("/时间")}),
+        json::array({at("77"), text("/时间")}), json::array({at("all"), text("/时间")}),
+        json::array({text("@机器人 /时间")})})
+    {
+        const auto judges = services.judges().size();
+        const auto chats = services.chats().size();
+        const auto sends = services.sends().size();
+        const auto context = MessageManager::getMessageContext(event(segments, 700));
+        require(!commands.canHandle(context) && commands.handleTask(context).first.empty(), "无实际 @ 的消息匹配命令");
+        deliver(bot, event(segments, 700));
+        require(services.judges().size() == judges + 1 && services.chats().size() == chats && services.sends().size() == sends,
+            "裸命令或无实际 @ 消息未沿用普通聊天分流");
+    }
+    for (const auto& value : {"时间", "正文 /时间", "/未知命令", "/", "/ 时间", "//时间", "/时间更多",
+        "\t/时间", "/时间\t参数", "／时间", "/时间\n"})
+    {
+        const auto judges = services.judges().size();
+        const auto chats = services.chats().size();
+        const auto segments = json::array({at("42"), text(value)});
+        require(!commands.canHandle(MessageManager::getMessageContext(event(segments, 700))), "非法命令格式匹配成功");
+        deliver(bot, event(segments, 700));
+        require(services.judges().size() == judges && services.chats().size() == chats + 1 &&
+            services.sends().back().at("message").back().at("data").at("text") == "COMMAND_CHAT_FALLTHROUGH",
+            "@ 的非命令消息未继续直接聊天");
+    }
+    for (const auto& segments : {json::array({text("正文 "), at("42"), text(" /时间")}),
+        json::array({reply(help_id), text("/时间")})})
+    {
+        const auto chats = services.chats().size();
+        const auto judges = services.judges().size();
+        deliver(bot, event(segments, 700));
+        require(services.chats().size() == chats + 1 && services.judges().size() == judges &&
+            services.sends().back().at("message").back().at("data").at("text") == "COMMAND_CHAT_FALLTHROUGH",
+            "正文前缀或仅引用消息误执行命令");
+    }
+    auto private_event = event(json::array({at("42"), text("/时间")}), 700);
+    private_event["message_type"] = "private";
+    for (const auto& input : {private_event, event(json::array({at("42"), text("/时间")}), 700, 42)})
+    {
+        const auto judges = services.judges().size();
+        const auto chats = services.chats().size();
+        const auto sends = services.sends().size();
+        require(!commands.canHandle(MessageManager::getMessageContext(input)), "私聊或自身消息匹配命令");
+        deliver(bot, input);
+        require(services.judges().size() == judges && services.chats().size() == chats && services.sends().size() == sends,
+            "私聊或自身消息新增业务回复");
+    }
+
+    const auto external = services.commands().size();
+    const auto missing_weather = invoke(json::array({at("42"), text("/天气   ")}));
+    require(missing_weather.dump().find("@机器人 /天气 城市名称") != std::string::npos, "天气缺参数提示未使用新格式");
+    const auto missing_music = invoke(json::array({at("42"), text("/点歌")}));
+    require(missing_music.at("message").at(0).at("data").at("text") == "请输入歌曲名称" &&
+        services.commands().size() == external, "缺少参数访问外部服务或改变点歌提示");
+    const auto weather = invoke(json::array({at("42"), text("/天气 北京")}));
+    require(services.commands().back().at("city") == "北京" && weather.dump().find("北京 北京") != std::string::npos,
+        "天气参数或业务回复改变");
+    const auto music_event = event(json::array({at("42"), text("   /点"),
+        image("https://example.com/music-input.png"), text("歌   歌曲 名称")}), 700);
+    const auto original_context = MessageManager::getMessageContext(music_event);
+    const auto saved_segments = original_context.msg_segments;
+    const auto saved_text = original_context.pmsgsegs.text;
+    require(commands.canHandle(original_context), "合并后的点歌命令未识别");
+    const auto judges = services.judges().size();
+    const auto chats = services.chats().size();
+    deliver(bot, music_event);
+    require(services.judges().size() == judges && services.chats().size() == chats, "点歌命令请求了模型");
+    const auto requests = services.commands();
+    require(requests.at(requests.size() - 2).at("keywords") == "歌曲 名称" &&
+        services.sends().back().at("message") == json::array({MessageManager::buildMsg("record", "https://example.com/song.mp3")}),
+        "点歌参数空格或语音回复改变");
+    const auto meal = invoke(json::array({at("42"), text("/吃啥")}));
+    require(meal.at("message").at(0) == text("MEAL_RESULT"), "餐食业务结果改变");
+    const auto random_image = invoke(json::array({at("42"), text("/随机二次元图片")}));
+    require(random_image.at("messages").size() == 1 &&
+        random_image.at("messages").at(0).at("data").at("content") ==
+            json::array({MessageManager::buildMsg("image", "https://example.com/one.png")}), "随机图片未使用合并转发图片");
+    const auto tagged_images = invoke(json::array({at("42"), text("/来点涩图   tag one")}));
+    require(services.commands().back().at("tag") == "tag one" && tagged_images.at("messages").size() == 2 &&
+        tagged_images.at("messages").at(1).at("data").at("content") ==
+            json::array({MessageManager::buildMsg("image", "https://example.com/three.png")}), "标签参数或图片转发改变");
+
+    services.failCommand(true);
+    const auto failed_weather = invoke(json::array({at("42"), text("/天气 北京")}));
+    require(failed_weather.dump().find("@机器人 /天气 城市名称") != std::string::npos, "天气查询失败提示仍使用裸命令");
+    for (const auto& scenario : {std::make_pair("/吃啥", "餐食查询失败"), std::make_pair("/随机二次元图片", "随机图片获取失败"),
+        std::make_pair("/来点涩图", "标签图片获取失败"), std::make_pair("/点歌 歌曲", "搜索歌曲失败")})
+        require(invoke(json::array({at("42"), text(scenario.first)})).dump().find(scenario.second) != std::string::npos,
+            "外部服务失败未保留原提示");
+    services.failCommand(false);
+    services.failSend(true);
+    const auto failed_event = event(json::array({at("42"), text("/时间")}), 700);
+    const auto failed_id = std::stoll(services.lastMessageId()) + 1;
+    deliver(bot, failed_event);
+    services.failSend(false);
+    const auto success_event = event(json::array({at("42"), text("/时间")}), 700);
+    deliver(bot, success_event);
+    const auto success_id = services.lastMessageId();
+    require(bot.tsk_manager.shutdown(), "命令历史最终归档失败");
+    const auto history = readTimeline(root / "data/AiModule").at("700");
+    bool original_recorded = false;
+    bool failed_input_recorded = false;
+    bool successful_reply_recorded = false;
+    for (const auto& record : history)
+    {
+        if (record.at("message_id") == music_event.at("message_id").dump())
+            original_recorded = record.at("segments") == saved_segments && record.at("text") == saved_text;
+        if (record.at("message_id") == failed_event.at("message_id").dump()) failed_input_recorded = true;
+        if (record.at("bot") == true)
+        {
+            require(record.at("message_id") != std::to_string(failed_id), "发送失败的命令回复进入历史");
+            if (record.at("message_id") == success_id) successful_reply_recorded = true;
+        }
+    }
+    require(original_recorded && failed_input_recorded && successful_reply_recorded,
+        "命令原消息被改写、发送失败丢失入站或成功出站未记录");
+    services.chat("CHAT_DEFAULT");
+}
+
 static void routingAndHistory(Services& services)
 {
     BotServer bot;
     size_t judges = services.judges().size();
     size_t chats = services.chats().size();
     size_t sends = services.sends().size();
-    deliver(bot, event(json::array({at("42"), text(" 时间")})));
-    require(services.sends().size() == sends + 1, "@时间未由命令回复");
+    deliver(bot, event(json::array({at("42"), text(" /时间")})));
+    require(services.sends().size() == sends + 1, "@ /时间未由命令回复");
     require(services.judges().size() == judges && services.chats().size() == chats, "命令被聊天模型抢占");
 
     const json card = {{"meta", {{"detail_1", {{"appid", B23_APPID}, {"qqdocurl", "invalid-short-link"}}}}}};
@@ -1487,6 +1742,8 @@ int main()
         writeJson(data / "session_memory.json", legacy);
         writeJson(data / "persona_map.json", {{"persona_map", {{"123", "GROUP_123_PERSONA_MARKER"}, {"1234", "GROUP_1234_PERSONA_SECRET"}}}});
         writeJson(data / "users_profile_map.json", {{"users_profile_map", {{"123", {{"77", {{"nickname", "LegacyMember"}, {"card", "LegacyCard"}, {"description", "GROUP_123_PROFILE_MARKER"}}}}}, {"1234", {{"99", {{"nickname", "SecretMember"}, {"card", "SecretCard"}, {"description", "GROUP_1234_PROFILE_SECRET"}}}}}}}});
+        commandRouting(services, root);
+        std::cout << "命令入口、参数、业务结果和成功交付记录通过\n";
         routingAndHistory(services);
         std::cout << "分流、共享上下文、发送回执通过\n";
         multimodalAndReplies(services, root);
