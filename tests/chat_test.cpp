@@ -647,14 +647,18 @@ static void commandRouting(Services& services, const std::filesystem::path& root
         const auto judges = services.judges().size();
         const auto chats = services.chats().size();
         const auto sends = services.sends().size();
-        deliver(bot, event(segments, 700));
+        const auto input = event(segments, 700);
+        deliver(bot, input);
         require(services.judges().size() == judges && services.chats().size() == chats, "合法命令请求了模型");
         require(services.sends().size() == sends + 1, "合法命令未发送一条回复");
-        return services.sends().back();
+        const auto sent = services.sends().back();
+        if(sent.contains("message") && sent.at("message").back().at("type") == "text")
+            replyForm(sent, input.at("message_id").dump());
+        return sent;
     };
     const auto help = invoke(json::array({at("42"), text(" /帮助")}));
-    const auto help_text = help.at("message").at(0).at("data").at("text").get<std::string>();
-    require(help.at("message").size() == 1 && help_text.find("显式 @ 本机器人") != std::string::npos &&
+    const auto help_text = help.at("message").back().at("data").at("text").get<std::string>();
+    require(help.at("message").size() == 2 && help_text.find("显式 @ 本机器人") != std::string::npos &&
         help_text.find("@机器人 /命令 参数") != std::string::npos, "帮助未说明新格式或改变了回复形式");
     for (const auto& name : {"帮助", "时间", "天气", "吃啥", "随机二次元图片", "来点涩图", "点歌"})
         require(occurrences(help_text, std::string("/") + name) == 1, "帮助列表缺少命令或重复命令");
@@ -668,14 +672,26 @@ static void commandRouting(Services& services, const std::filesystem::path& root
         json::array({reply(help_id), text("/时间"), at("42")})})
     {
         const auto result = invoke(segments);
-        require(result.at("message").size() == 1 && result.at("message").at(0).at("type") == "text" &&
-            result.at("message").at(0).at("data").at("text").get<std::string>() != "COMMAND_CHAT_FALLTHROUGH",
+        require(result.at("message").size() == 2 && result.at("message").back().at("type") == "text" &&
+            result.at("message").back().at("data").at("text").get<std::string>() != "COMMAND_CHAT_FALLTHROUGH",
             "@ 位置或文本合并导致时间命令进入聊天");
     }
+    for(const auto& id : {json(nullptr), json(0), json("invalid")})
+    {
+        auto input = event(json::array({at("42"), text("/时间")}), 700);
+        if(id.is_null()) input.erase("message_id");
+        else input["message_id"] = id;
+        deliver(bot, input);
+        replyForm(services.sends().back());
+    }
+    auto negative_id = event(json::array({at("42"), text("/时间")}), 700);
+    negative_id["message_id"] = -9001;
+    deliver(bot, negative_id);
+    replyForm(services.sends().back(), "-9001");
     const json card = {{"meta", {{"detail_1", {{"appid", B23_APPID}, {"qqdocurl", "invalid-short-link"}}}}}};
     const auto priority = invoke(json::array({at("42"), text("/时间"),
         {{"type", "json"}, {"data", {{"data", card.dump()}}}}}));
-    require(priority.at("message").size() == 1 && priority.at("message").at(0).at("type") == "text" &&
+    require(priority.at("message").size() == 2 && priority.at("message").back().at("type") == "text" &&
         priority.dump().find("COMMAND_CHAT_FALLTHROUGH") == std::string::npos && priority.dump().find("失败") == std::string::npos,
         "合法命令未优先于 B 站卡片");
 
@@ -732,7 +748,7 @@ static void commandRouting(Services& services, const std::filesystem::path& root
     const auto missing_weather = invoke(json::array({at("42"), text("/天气   ")}));
     require(missing_weather.dump().find("@机器人 /天气 城市名称") != std::string::npos, "天气缺参数提示未使用新格式");
     const auto missing_music = invoke(json::array({at("42"), text("/点歌")}));
-    require(missing_music.at("message").at(0).at("data").at("text") == "请输入歌曲名称" &&
+    require(missing_music.at("message").back().at("data").at("text") == "请输入歌曲名称" &&
         services.commands().size() == external, "缺少参数访问外部服务或改变点歌提示");
     const auto weather = invoke(json::array({at("42"), text("/天气 北京")}));
     require(services.commands().back().at("city") == "北京" && weather.dump().find("北京 北京") != std::string::npos,
@@ -752,7 +768,7 @@ static void commandRouting(Services& services, const std::filesystem::path& root
         services.sends().back().at("message") == json::array({MessageManager::buildMsg("record", "https://example.com/song.mp3")}),
         "点歌参数空格或语音回复改变");
     const auto meal = invoke(json::array({at("42"), text("/吃啥")}));
-    require(meal.at("message").at(0) == text("MEAL_RESULT"), "餐食业务结果改变");
+    require(meal.at("message").back() == text("MEAL_RESULT"), "餐食业务结果改变");
     const auto random_image = invoke(json::array({at("42"), text("/随机二次元图片")}));
     require(random_image.at("messages").size() == 1 &&
         random_image.at("messages").at(0).at("data").at("content") ==
@@ -791,7 +807,9 @@ static void commandRouting(Services& services, const std::filesystem::path& root
         if (record.at("bot") == true)
         {
             require(record.at("message_id") != std::to_string(failed_id), "发送失败的命令回复进入历史");
-            if (record.at("message_id") == success_id) successful_reply_recorded = true;
+            if (record.at("message_id") == success_id)
+                successful_reply_recorded = record.at("reply_to") == success_event.at("message_id").dump() &&
+                    record.at("segments").front() == reply(success_event.at("message_id").dump());
         }
     }
     require(original_recorded && failed_input_recorded && successful_reply_recorded,

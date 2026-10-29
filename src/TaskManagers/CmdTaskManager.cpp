@@ -64,6 +64,9 @@ std::pair<json, std::string> CmdTaskManager::handleTask(const MessageContext& ms
     auto& command = cmd_map.at(cmd_name);
     json result = command->execute(cmd_args);
     if(!result.is_array()) result = json::array({result});
-    return std::make_pair(result, command->sendType());
+    const auto sendType = command->sendType();
+    if(sendType == "direct" && result.size() == 1 && result.front().value("type", "") == "text" && !msgctx.message_id.empty())
+        result.insert(result.begin(), MessageManager::buildMsg("reply", msgctx.message_id));
+    return std::make_pair(result, sendType);
 }
 
