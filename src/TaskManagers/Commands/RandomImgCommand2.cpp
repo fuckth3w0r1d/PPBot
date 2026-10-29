@@ -8,20 +8,37 @@ std::vector<std::string> RandomImgCommand2::getImgUrls(const std::string& tag)
     auto res = cli.Get(RANDOM_IMG_GET_PATH2 + "?tag=" + tag);
     if(!res)
     {
-        Logger::error("随机图片网络请求失败", httplib::to_string(res.error()));
+        Logger::warn("标签图片 网络请求失败: ", httplib::to_string(res.error()));
         return {};
     }
     if(res->status != 200)
     {
-        Logger::warn("随机图片请求 HTTP状态码: ", res->status);
-        Logger::error("随机图片请求 异常响应体:", json::parse(res->body).dump(4));
+        Logger::httpError("标签图片", res->status, res->body);
         return {};
     }
-    json data = json::parse(res->body);
-    std::vector<std::string> img_urls = data["proxyUrls"].get<std::vector<std::string>>();
-    return img_urls;
+    try
+    {
+        const auto data = json::parse(res->body);
+        auto urls = data.at("proxyUrls").get<std::vector<std::string>>();
+        if(urls.empty())
+        {
+            Logger::httpError("标签图片", res->status, res->body, "响应未提供图片地址");
+            return {};
+        }
+        for(const auto& url : urls)
+            if(url.empty())
+            {
+                Logger::httpError("标签图片", res->status, res->body, "响应包含空图片地址");
+                return {};
+            }
+        return urls;
+    }
+    catch(const json::exception& error)
+    {
+        Logger::httpError("标签图片", res->status, res->body, std::string("响应解析失败: ") + error.what());
+        return {};
+    }
 }
-
 
 std::string RandomImgCommand2::name()
 {
@@ -35,11 +52,9 @@ std::string RandomImgCommand2::sendType()
 
 json RandomImgCommand2::execute(const std::string& args)
 {
-    std::vector<std::string> img_urls = getImgUrls(args);
+    const auto urls = getImgUrls(args);
     json result = json::array();
-    for(const auto& url : img_urls)
-    {
-        result.emplace_back(MessageManager::buildMsg("image", url));
-    }
+    if(urls.empty()) result.push_back(MessageManager::buildMsg("text", "标签图片获取失败"));
+    for(const auto& url : urls) result.push_back(MessageManager::buildMsg("image", url));
     return result;
-}   
+}

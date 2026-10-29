@@ -1,15 +1,18 @@
 #include "TaskManagers/Commands.h"
 #include "logger.h"
 #include "config.h"
+#include <cerrno>
+#include <cstring>
 
 // 获取当前时间的函数
 std::string TimeCommand::getFormattedTime() 
 { 
     time_t now = time(0);
     tm local_time;
+    errno = 0;
     if(localtime_r(&now, &local_time) == nullptr)
     {
-        Logger::error("获取本地时间失败", "");
+        Logger::warn("本地时间转换失败: ", errno ? std::strerror(errno) : "localtime_r 返回空值");
         return "时间获取失败";
     }
     char buffer[80];

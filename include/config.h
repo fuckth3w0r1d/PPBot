@@ -8,6 +8,7 @@ extern std::size_t LOG_CONSOLE_LEVEL;
 
 // bot
 extern std::string BOT_QQ;
+extern std::string BOT_NAME;
 
 // server
 extern std::string SERVER_HOST;
@@ -19,19 +20,33 @@ extern std::string CLIENT_HOST;
 extern size_t CLIENT_PORT;
 extern std::string CLIENT_TOKEN;
 
-// ai
-extern std::string AI_KEY;
-extern std::string AI_KEY2;
-extern std::string AI_HOST;
-extern std::string AI_HOST2;
-extern size_t AI_PORT;
-extern std::string AI_POST_PATH;
-extern std::string AI_POST_PATH2;
-extern std::string AI_MODEL;
-extern std::string AI_MODEL2;
-extern std::string AI_SYS_PROMPTS;
-extern size_t AI_MAX_TOKENS;
-extern size_t AI_MAX_CHAT_ROUNDS;
+extern std::string CHAT_LLM_KEY;
+extern std::string CHAT_LLM_HOST;
+extern size_t CHAT_LLM_PORT;
+extern std::string CHAT_LLM_POST_PATH;
+extern std::string CHAT_LLM_MODEL;
+extern std::string CHAT_LLM_SYS_PROMPTS;
+extern size_t CHAT_LLM_MAX_TOKENS;
+extern size_t CHAT_LLM_MAX_MESSAGES;
+extern size_t CHAT_LLM_CONTEXT_TOKENS;
+extern size_t CHAT_LLM_RETRIEVAL_CONTEXT_TOKENS;
+extern size_t CHAT_LLM_TIMEOUT_SECONDS;
+extern std::string JUDGE_KEY;
+extern std::string JUDGE_HOST;
+extern size_t JUDGE_PORT;
+extern std::string JUDGE_POST_PATH;
+extern std::string JUDGE_MODEL;
+extern size_t JUDGE_MAX_TOKENS;
+extern size_t JUDGE_TIMEOUT_SECONDS;
+extern size_t JUDGE_MAX_MESSAGES;
+extern size_t JUDGE_CONTEXT_TOKENS;
+extern double CHAT_LLM_REPLY_PROBABILITY;
+extern std::string EMBEDDING_KEY;
+extern std::string EMBEDDING_HOST;
+extern size_t EMBEDDING_PORT;
+extern std::string EMBEDDING_POST_PATH;
+extern std::string EMBEDDING_MODEL;
+extern size_t EMBEDDING_TIMEOUT_SECONDS;
 
 // amap
 extern std::string AMAP_KEY;
